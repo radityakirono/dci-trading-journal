@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { supabase } from '@/lib/supabase/client';
 
 interface QuantSignal {
   id: string;
@@ -38,7 +38,10 @@ export function useRealtimeSignals() {
   const clearSignals = useCallback(() => setNewSignals([]), []);
 
   useEffect(() => {
-    const supabase = createClient();
+    if (!supabase) {
+      console.warn('Supabase client not available for realtime');
+      return;
+    }
 
     const channel = supabase
       .channel('quant-signals-realtime')
