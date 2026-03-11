@@ -9,7 +9,7 @@ import { AnimatedSection } from '@/components/dashboard/animated-section';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useRealtimeSignals } from '@/lib/hooks/useRealtimeSignals';
 
-/* ─── Types ─── */
+/* --- Types --- */
 
 interface TradeTicket {
   target_entry?: number;
@@ -52,7 +52,7 @@ interface SignalRun {
   } | null;
 }
 
-/* ─── Badge Colors ─── */
+/* --- Badge Colors --- */
 
 const SIGNAL_COLORS: Record<string, { bg: string; text: string; glow: string }> = {
   BUY: { bg: 'bg-emerald-500/15', text: 'text-emerald-400', glow: 'shadow-emerald-500/20' },
@@ -69,7 +69,7 @@ const RUN_STATUS_COLORS: Record<string, { bg: string; text: string }> = {
   PARTIAL: { bg: 'bg-amber-500/15', text: 'text-amber-400' },
 };
 
-/* ─── Helpers ─── */
+/* --- Helpers --- */
 
 function formatTime(iso: string) {
   return new Date(iso).toLocaleString('id-ID', {
@@ -94,7 +94,7 @@ function formatDuration(ms: number) {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/* ─── Page ─── */
+/* --- Page --- */
 
 export default function NotificationsPage() {
   const [signals, setSignals] = useState<QuantSignal[]>([]);
@@ -147,11 +147,9 @@ export default function NotificationsPage() {
 
   return (
     <div className="relative min-h-screen bg-background pb-12">
-      {/* Radial gradient background — same as homepage */}
       <div className="pointer-events-none absolute inset-0 -z-20 bg-[radial-gradient(90%_70%_at_50%_0%,color-mix(in_oklch,var(--color-primary)_12%,transparent),transparent_72%)]" />
 
       <main className="mx-auto w-full max-w-7xl px-4 pt-6 sm:px-6 lg:px-8">
-        {/* Header — matches homepage layout */}
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link
@@ -188,7 +186,6 @@ export default function NotificationsPage() {
           </div>
         </div>
 
-        {/* Page Title */}
         <AnimatedSection id="signal-header">
           <div className="mb-6">
             <h1 className="text-2xl font-bold tracking-tight">Signal Notifications</h1>
@@ -218,7 +215,6 @@ export default function NotificationsPage() {
           </div>
         ) : (
           <>
-            {/* Pipeline Health Summary */}
             <AnimatedSection id="pipeline-summary">
               <section className="mb-6 grid gap-4 sm:grid-cols-3">
                 <div className="rounded-xl border border-border/40 bg-card/60 p-4">
@@ -228,7 +224,7 @@ export default function NotificationsPage() {
                   </div>
                   <p className="mt-1 text-2xl font-bold tabular-nums">{totalRuns}</p>
                   <p className="text-xs text-muted-foreground">
-                    {completedRuns} completed \u00b7 {skippedRuns} skipped
+                    {completedRuns} completed &middot; {skippedRuns} skipped
                   </p>
                 </div>
                 <div className="rounded-xl border border-border/40 bg-card/60 p-4">
@@ -242,7 +238,7 @@ export default function NotificationsPage() {
                         {latestRun.slot_key.split(':')[1]}:00 WIB
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {latestRun.metrics?.regime ?? 'Unknown'} regime \u00b7 {latestRun.engine_version}
+                        {latestRun.metrics?.regime ?? 'Unknown'} regime &middot; {latestRun.engine_version}
                       </p>
                     </>
                   ) : (
@@ -262,7 +258,6 @@ export default function NotificationsPage() {
               </section>
             </AnimatedSection>
 
-            {/* Pipeline Run History */}
             <AnimatedSection id="pipeline-runs">
               <section className="mb-6 rounded-xl border border-border/40 bg-card/60">
                 <div className="border-b border-border/30 px-5 py-3.5">
@@ -316,7 +311,6 @@ export default function NotificationsPage() {
               </section>
             </AnimatedSection>
 
-            {/* Trading Signals */}
             <AnimatedSection id="trading-signals">
               <section className="rounded-xl border border-border/40 bg-card/60">
                 <div className="border-b border-border/30 px-5 py-3.5 flex items-center justify-between">
