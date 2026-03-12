@@ -7,6 +7,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   Line,
   XAxis,
   YAxis,
@@ -28,15 +29,21 @@ import {
 } from "@/lib/format";
 import type { EquityPoint } from "@/lib/types";
 
-type Range = "1W" | "1M" | "3M" | "YTD" | "1Y" | "ALL";
-type EquityWithBenchmark = EquityPoint & { ihsg: number };
+// Added 1D
+type Range = "1D" | "1W" | "1M" | "3M" | "YTD" | "1Y" | "ALL";
+
+type EquityWithBenchmark = EquityPoint & { 
+  ihsgRaw: number;
+  equityNormalized: number;
+  ihsgNormalized: number;
+};
 
 const equityConfig = {
-  equity: {
+  equityNormalized: {
     label: "Portfolio",
     color: "var(--chart-2)",
   },
-  ihsg: {
+  ihsgNormalized: {
     label: "IHSG",
     color: "var(--chart-4)",
   },
@@ -62,7 +69,9 @@ export function EquityChart({ data }: EquityChartProps) {
     const latest = toUtcDate(data[data.length - 1].date);
     const startDate = new Date(latest);
 
-    if (range === "1W") {
+    if (range === "1D") {
+      startDate.setUTCDate(startDate.getUTCDate() - 1);
+    } else if (range === "1W") {
       startDate.setUTCDate(startDate.getUTCDate() - 7);
     } else if (range === "1M") {
       startDate.setUTCDate(startDate.getUTCDate() - 30);
@@ -82,14 +91,22 @@ export function EquityChart({ data }: EquityChartProps) {
     if (!filteredData.length) return [];
 
     const baseEquity = filteredData[0].equity;
+    
     return filteredData.map((point, index) => {
+      // Mock IHSG value
       const marketDrift = index * 0.00035;
       const marketWave = Math.sin(index / 8) * 0.008 + Math.cos(index / 17) * 0.004;
-      const ihsg = Math.max(baseEquity * 0.75, baseEquity * (1 + marketDrift + marketWave));
+      const ihsgRaw = Math.max(baseEquity * 0.75, baseEquity * (1 + marketDrift + marketWave));
+
+      // Calculate normalized returns from the start of the period
+      const equityNormalized = baseEquity !== 0 ? (point.equity - baseEquity) / baseEquity : 0;
+      const ihsgNormalized = baseEquity !== 0 ? (ihsgRaw - baseEquity) / baseEquity : 0;
 
       return {
         ...point,
-        ihsg: Math.round(ihsg),
+        ihsgRaw,
+        equityNormalized,
+        ihsgNormalized,
       };
     });
   }, [filteredData]);
@@ -102,17 +119,35 @@ export function EquityChart({ data }: EquityChartProps) {
     firstPoint && firstPoint.equity !== 0 ? netChange / firstPoint.equity : 0;
 
   const ihsgChange =
-    firstPoint && latestPoint && firstPoint.ihsg !== 0
-      ? (latestPoint.ihsg - firstPoint.ihsg) / firstPoint.ihsg
+    firstPoint && latestPoint && firstPoint.ihsgRaw !== 0
+      ? (latestPoint.ihsgRaw - firstPoint.ihsgRaw) / firstPoint.ihsgRaw
       : 0;
 
   const relativeOutperformance = netChangeRatio - ihsgChange;
 
   return (
-    <Card className="h-full">
-      <CardHeader className="gap-4">
-        <CardTitle className="text-2xl font-semibold">Equity</CardTitle>
-        <div className="flex flex-wrap gap-4 text-small">
+    <Card className="h-full flex flex-col">
+      <CardHeader className="gap-4 pb-2">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-2xl font-semibold">Equity</CardTitle>
+          <Tabs
+            value={range}
+            onValueChange={(value) => setRange(value as Range)}
+            className="w-auto hidden sm:block"
+          >
+            <TabsList className="h-8">
+              <TabsTrigger value="1D" className="text-xs px-2 h-6">1D</TabsTrigger>
+              <TabsTrigger value="1W" className="text-xs px-2 h-6">1W</TabsTrigger>
+              <TabsTrigger value="1M" className="text-xs px-2 h-6">1M</TabsTrigger>
+              <TabsTrigger value="3M" className="text-xs px-2 h-6">3M</TabsTrigger>
+              <TabsTrigger value="YTD" className="text-xs px-2 h-6">YTD</TabsTrigger>
+              <TabsTrigger value="1Y" className="text-xs px-2 h-6">1Y</TabsTrigger>
+              <TabsTrigger value="ALL" className="text-xs px-2 h-6">MAX</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
+        
+        <div className="flex flex-wrap gap-5 text-small">
           <div className="space-y-1">
             <p className="text-muted-foreground">Current Equity</p>
             <p className="text-lg font-semibold">
@@ -121,21 +156,21 @@ export function EquityChart({ data }: EquityChartProps) {
           </div>
           <div className="space-y-1">
             <p className="text-muted-foreground">Portfolio Return</p>
-            <p className={netChange >= 0 ? "text-emerald-500" : "text-red-500"}>
-              {formatCurrency(netChange)} ({formatPercent(netChangeRatio)})
+            <p className={netChange >= 0 ? "text-emerald-500 font-medium" : "text-red-500 font-medium"}>
+              {netChange >= 0 ? "+" : ""}{formatCurrency(netChange)} ({netChangeRatio >= 0 ? "+" : ""}{formatPercent(netChangeRatio)})
             </p>
           </div>
-          <div className="space-y-1">
+          <div className="space-y-1 hidden min-[400px]:block">
             <p className="text-muted-foreground">IHSG Return</p>
-            <p className={ihsgChange >= 0 ? "text-emerald-500" : "text-red-500"}>
-              {formatPercent(ihsgChange)}
+            <p className={ihsgChange >= 0 ? "text-emerald-500 font-medium" : "text-red-500 font-medium"}>
+               {ihsgChange >= 0 ? "+" : ""}{formatPercent(ihsgChange)}
             </p>
           </div>
-          <div className="space-y-1">
-            <p className="text-muted-foreground">Outperformance</p>
+          <div className="space-y-1 hidden sm:block">
+            <p className="text-muted-foreground">Alpha (Relative)</p>
             <p
               className={
-                relativeOutperformance >= 0 ? "text-emerald-500" : "text-red-500"
+                relativeOutperformance >= 0 ? "text-emerald-500 font-medium tracking-tight bg-emerald-500/10 px-1.5 py-0.5 rounded-md" : "text-red-500 font-medium tracking-tight bg-red-500/10 px-1.5 py-0.5 rounded-md"
               }
             >
               {relativeOutperformance >= 0 ? "+" : ""}
@@ -143,75 +178,128 @@ export function EquityChart({ data }: EquityChartProps) {
             </p>
           </div>
         </div>
+        
+        {/* Mobile Tabs */}
+        <div className="sm:hidden pt-2">
+            <Tabs
+              value={range}
+              onValueChange={(value) => setRange(value as Range)}
+              className="w-full"
+            >
+              <TabsList className="w-full justify-start h-8 overflow-x-auto">
+                <TabsTrigger value="1D" className="text-xs px-2 h-6">1D</TabsTrigger>
+                <TabsTrigger value="1W" className="text-xs px-2 h-6">1W</TabsTrigger>
+                <TabsTrigger value="1M" className="text-xs px-2 h-6">1M</TabsTrigger>
+                <TabsTrigger value="3M" className="text-xs px-2 h-6">3M</TabsTrigger>
+                <TabsTrigger value="YTD" className="text-xs px-2 h-6">YTD</TabsTrigger>
+                <TabsTrigger value="1Y" className="text-xs px-2 h-6">1Y</TabsTrigger>
+                <TabsTrigger value="ALL" className="text-xs px-2 h-6">MAX</TabsTrigger>
+              </TabsList>
+            </Tabs>
+        </div>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <ChartContainer config={equityConfig} className="h-[250px] w-full">
-          <AreaChart data={chartData}>
+      <CardContent className="space-y-4 flex-1 flex flex-col justify-end pt-0">
+        <ChartContainer config={equityConfig} className="h-[250px] w-full mt-auto">
+          <AreaChart data={chartData} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
             <defs>
               <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="var(--color-equity)" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="var(--color-equity)" stopOpacity={0} />
+                <stop offset="5%" stopColor="var(--color-equityNormalized)" stopOpacity={0.3} />
+                <stop offset="95%" stopColor="var(--color-equityNormalized)" stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid vertical={false} />
+            <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
             <XAxis
               dataKey="date"
               axisLine={false}
               tickLine={false}
               minTickGap={32}
               tickFormatter={formatShortDate}
+              fontSize={12}
+              stroke="var(--muted-foreground)"
+              dy={10}
             />
             <YAxis
               axisLine={false}
               tickLine={false}
-              width={100}
-              tickFormatter={formatCompactCurrency}
+              width={65}
+              tickFormatter={(val) => `${val > 0 ? "+" : ""}${(val * 100).toFixed(1)}%`}
+              fontSize={12}
+              stroke="var(--muted-foreground)"
+              dx={-5}
             />
             <ChartTooltip
-              cursor={false}
+              cursor={{ stroke: 'var(--muted-foreground)', strokeWidth: 1, strokeDasharray: '4 4' }}
               content={
                 <ChartTooltipContent
                   indicator="line"
                   labelFormatter={(value) => formatShortDate(String(value))}
-                  formatter={(value) => formatCurrency(Number(value))}
+                  formatter={(value, name, item, index) => {
+                     // Get the absolute raw value depending on the line
+                     const rawValue = name === "equityNormalized" 
+                          ? item.payload.equity 
+                          : item.payload.ihsgRaw;
+                     
+                     return (
+                         <div className="flex flex-col gap-0.5">
+                             <div className="font-medium">
+                                 {Number(value) > 0 ? "+" : ""}{formatPercent(Number(value))}
+                             </div>
+                             <div className="text-[10px] text-muted-foreground">
+                                 {formatCompactCurrency(rawValue)}
+                             </div>
+                         </div>
+                     );
+                  }}
                 />
               }
             />
+            {/* Base Zero Line */}
+            <Line
+              type="linear"
+              dataKey={() => 0}
+              stroke="var(--border)"
+              strokeWidth={1}
+              dot={false}
+              activeDot={false}
+            />
             <Area
               type="monotone"
-              dataKey="equity"
-              stroke="var(--color-equity)"
-              strokeWidth={2.1}
+              dataKey="equityNormalized"
+              stroke="var(--color-equityNormalized)"
+              strokeWidth={2.5}
               fill="url(#equityFill)"
               fillOpacity={1}
+              activeDot={{ r: 4, strokeWidth: 2 }}
             />
             <Line
               type="monotone"
-              dataKey="ihsg"
-              stroke="var(--color-ihsg)"
+              dataKey="ihsgNormalized"
+              stroke="var(--color-ihsgNormalized)"
               strokeWidth={1.8}
               dot={false}
-              strokeDasharray="5 4"
+              activeDot={{ r: 4, strokeWidth: 0 }}
+              strokeDasharray="5 5"
             />
           </AreaChart>
         </ChartContainer>
 
-        <div className="rounded-xl border border-border/60 p-3">
-          <p className="mb-2 text-small uppercase tracking-[0.2em] text-muted-foreground">
+        <div className="rounded-xl border border-border/60 p-3 bg-muted/20">
+          <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
             Daily Profit & Loss
           </p>
-          <ChartContainer config={pnlConfig} className="h-[120px] w-full">
-            <BarChart data={chartData}>
+          <ChartContainer config={pnlConfig} className="h-[90px] w-full">
+            <BarChart data={chartData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
               <XAxis
                 dataKey="date"
                 axisLine={false}
                 tickLine={false}
                 minTickGap={32}
                 tickFormatter={formatShortDate}
+                hide
               />
               <YAxis hide />
               <ChartTooltip
-                cursor={false}
+                cursor={{ fill: 'var(--muted)', opacity: 0.4 }}
                 content={
                   <ChartTooltipContent
                     indicator="dot"
@@ -220,25 +308,17 @@ export function EquityChart({ data }: EquityChartProps) {
                   />
                 }
               />
-              <Bar dataKey="dailyPnl" fill="var(--color-dailyPnl)" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="dailyPnl" radius={[4, 4, 0, 0]}>
+                {chartData.map((entry, index) => (
+                  <Cell 
+                    key={`cell-${index}`} 
+                    fill={entry.dailyPnl >= 0 ? "var(--color-dailyPnl)" : "hsl(var(--destructive))"} 
+                  />
+                ))}
+              </Bar>
             </BarChart>
           </ChartContainer>
         </div>
-
-        <Tabs
-          value={range}
-          onValueChange={(value) => setRange(value as Range)}
-          className="w-full"
-        >
-          <TabsList className="w-full justify-start">
-            <TabsTrigger value="1W">1W</TabsTrigger>
-            <TabsTrigger value="1M">1M</TabsTrigger>
-            <TabsTrigger value="3M">3M</TabsTrigger>
-            <TabsTrigger value="YTD">YTD</TabsTrigger>
-            <TabsTrigger value="1Y">1Y</TabsTrigger>
-            <TabsTrigger value="ALL">ALL</TabsTrigger>
-          </TabsList>
-        </Tabs>
       </CardContent>
     </Card>
   );

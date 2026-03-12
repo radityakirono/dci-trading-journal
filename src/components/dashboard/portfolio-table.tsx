@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -30,7 +31,9 @@ import {
   formatCurrency,
   formatLongDate,
   formatNumber,
+  formatPercent,
 } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import type { Transaction } from "@/lib/types";
 
 const SHARES_PER_LOT = 100;
@@ -41,8 +44,19 @@ interface Position {
   costBasis: number;
   averageCost: number;
   marketPrice: number;
+  dayChange: number;
   marketValue: number;
   unrealizedPnL: number;
+  unrealizedPnLPct: number;
+  weight: number;
+}
+
+type SortKey = keyof Position;
+type SortDirection = "asc" | "desc";
+
+interface SortConfig {
+  key: SortKey;
+  direction: SortDirection;
 }
 
 interface PortfolioTableProps {
@@ -55,6 +69,10 @@ export function PortfolioTable({
   marketPrices,
 }: PortfolioTableProps) {
   const [historyTicker, setHistoryTicker] = useState<string>("ALL");
+  const [sortConfig, setSortConfig] = useState<SortConfig>({
+    key: "marketValue",
+    direction: "desc",
+  });
 
   const positions = useMemo(() => {
     const positionMap = new Map<
@@ -84,7 +102,7 @@ export function PortfolioTable({
       positionMap.set(trade.ticker, current);
     }
 
-    return Array.from(positionMap.entries())
+    const rawPositions = Array.from(positionMap.entries())
       .map(([ticker, value]) => {
         const averageCost =
           value.quantity > 0
@@ -92,6 +110,10 @@ export function PortfolioTable({
             : 0;
         const marketValue = value.quantity * SHARES_PER_LOT * value.marketPrice;
         const unrealizedPnL = marketValue - value.costBasis;
+        const unrealizedPnLPct = value.costBasis > 0 ? unrealizedPnL / value.costBasis : 0;
+
+        // Mock a previous close / day change for UI purposes
+        const mockDayChange = value.marketPrice * ((ticker.length * 0.005) * (ticker.charCodeAt(0) % 2 === 0 ? 1 : -1));
 
         return {
           ticker,
@@ -99,13 +121,30 @@ export function PortfolioTable({
           costBasis: value.costBasis,
           averageCost,
           marketPrice: value.marketPrice,
+          dayChange: mockDayChange,
           marketValue,
           unrealizedPnL,
+          unrealizedPnLPct,
+          weight: 0, // Will calculate next
         } satisfies Position;
       })
-      .filter((position) => position.quantity > 0)
-      .sort((a, b) => b.marketValue - a.marketValue);
-  }, [marketPrices, transactions]);
+      .filter((position) => position.quantity > 0);
+
+    const totalValue = rawPositions.reduce((sum, p) => sum + p.marketValue, 0);
+
+    const withWeights = rawPositions.map((p) => ({
+      ...p,
+      weight: totalValue > 0 ? p.marketValue / totalValue : 0,
+    }));
+
+    return withWeights.sort((a, b) => {
+      const aVal = a[sortConfig.key];
+      const bVal = b[sortConfig.key];
+      if (aVal < bVal) return sortConfig.direction === "asc" ? -1 : 1;
+      if (aVal > bVal) return sortConfig.direction === "asc" ? 1 : -1;
+      return 0;
+    });
+  }, [marketPrices, transactions, sortConfig]);
 
   const transactionHistory = useMemo(
     () => [...transactions].sort((a, b) => b.date.localeCompare(a.date)),
@@ -125,9 +164,38 @@ export function PortfolioTable({
     (sum, position) => sum + position.marketValue,
     0
   );
+  const totalCostBasis = positions.reduce((sum, position) => sum + position.costBasis, 0);
   const totalUnrealizedPnL = positions.reduce(
     (sum, position) => sum + position.unrealizedPnL,
     0
+  );
+  const totalUnrealizedPnLPct = totalCostBasis > 0 ? totalUnrealizedPnL / totalCostBasis : 0;
+
+  const handleSort = (key: SortKey) => {
+    setSortConfig((current) => ({
+      key,
+      direction: current.key === key && current.direction === "desc" ? "asc" : "desc",
+    }));
+  };
+
+  const SortableHead = ({ label, sortKey, align = "left" }: { label: string; sortKey: SortKey; align?: "left" | "right" }) => (
+    <TableHead
+      className={cn("cursor-pointer select-none hover:text-foreground", align === "right" && "text-right")}
+      onClick={() => handleSort(sortKey)}
+    >
+      <div className={cn("flex items-center gap-1", align === "right" && "justify-end")}>
+        {label}
+        {sortConfig.key === sortKey ? (
+          sortConfig.direction === "asc" ? (
+            <ArrowUp className="size-3" />
+          ) : (
+            <ArrowDown className="size-3" />
+          )
+        ) : (
+          <ArrowUpDown className="size-3 opacity-20" />
+        )}
+      </div>
+    </TableHead>
   );
 
   return (
@@ -148,49 +216,74 @@ export function PortfolioTable({
               </span>
               <span
                 className={
-                  totalUnrealizedPnL >= 0 ? "text-emerald-500" : "text-red-500"
+                  totalUnrealizedPnL >= 0 ? "text-emerald-500 font-medium" : "text-red-500 font-medium"
                 }
               >
-                Unrealized P/L: {formatCurrency(totalUnrealizedPnL)}
+                Unrealized P/L: {totalUnrealizedPnL >= 0 ? "+" : ""}{formatCurrency(totalUnrealizedPnL)} ({formatPercent(totalUnrealizedPnLPct)})
               </span>
             </div>
           </div>
 
-          <TabsContent value="positions">
-            <Table>
+          <TabsContent value="positions" className="overflow-x-auto">
+            <Table className="min-w-[800px]">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Ticker</TableHead>
-                  <TableHead>Quantity (lots)</TableHead>
-                  <TableHead>Average Cost</TableHead>
-                  <TableHead>Last Price</TableHead>
-                  <TableHead>Market Value</TableHead>
-                  <TableHead>Unrealized P/L</TableHead>
+                  <SortableHead label="Ticker" sortKey="ticker" />
+                  <SortableHead label="Qty (lots)" sortKey="quantity" align="right" />
+                  <SortableHead label="Avg Cost" sortKey="averageCost" align="right" />
+                  <SortableHead label="Last Price" sortKey="marketPrice" align="right" />
+                  <SortableHead label="Day Change" sortKey="dayChange" align="right" />
+                  <SortableHead label="Market Value" sortKey="marketValue" align="right" />
+                  <SortableHead label="Cost Basis" sortKey="costBasis" align="right" />
+                  <SortableHead label="Unrealized P/L" sortKey="unrealizedPnL" align="right" />
+                  <SortableHead label="Weight %" sortKey="weight" align="right" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {positions.length > 0 ? (
-                  positions.map((position) => (
-                    <TableRow key={position.ticker}>
-                      <TableCell className="font-medium">{position.ticker}</TableCell>
-                      <TableCell>{formatNumber(position.quantity)}</TableCell>
-                      <TableCell>{formatCurrency(position.averageCost)}</TableCell>
-                      <TableCell>{formatCurrency(position.marketPrice)}</TableCell>
-                      <TableCell>{formatCurrency(position.marketValue)}</TableCell>
-                      <TableCell
-                        className={
-                          position.unrealizedPnL >= 0
-                            ? "text-emerald-500"
-                            : "text-red-500"
-                        }
-                      >
-                        {formatCurrency(position.unrealizedPnL)}
-                      </TableCell>
-                    </TableRow>
-                  ))
+                  positions.map((position) => {
+                    const dayChangePct = position.marketPrice > 0 ? position.dayChange / position.marketPrice : 0;
+                    return (
+                      <TableRow key={position.ticker} className="group hover:bg-muted/30">
+                        <TableCell className="font-semibold">{position.ticker}</TableCell>
+                        <TableCell className="text-right">{formatNumber(position.quantity)}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(position.averageCost)}</TableCell>
+                        <TableCell className="text-right font-medium transition-colors">
+                          {formatCurrency(position.marketPrice)}
+                        </TableCell>
+                        <TableCell className={cn("text-right text-[13px]", position.dayChange >= 0 ? "text-emerald-500" : "text-red-500")}>
+                          {position.dayChange >= 0 ? "+" : ""}{formatCurrency(position.dayChange)}
+                          <span className="ml-1 opacity-70">({formatPercent(dayChangePct)})</span>
+                        </TableCell>
+                        <TableCell className="text-right font-medium">{formatCurrency(position.marketValue)}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{formatCurrency(position.costBasis)}</TableCell>
+                        <TableCell className={cn("text-right", position.unrealizedPnL >= 0 ? "text-emerald-500" : "text-red-500")}>
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span className="font-medium">
+                              {position.unrealizedPnL >= 0 ? "+" : ""}{formatCurrency(position.unrealizedPnL)}
+                            </span>
+                            <Badge variant="outline" className={cn("text-[10px] px-1 py-0 h-4 border-current")}>
+                              {position.unrealizedPnLPct >= 0 ? "+" : ""}{formatPercent(position.unrealizedPnLPct)}
+                            </Badge>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <span className="w-10 text-[12px]">{formatPercent(position.weight)}</span>
+                            <div className="h-1.5 w-12 overflow-hidden rounded-full bg-muted">
+                              <div
+                                className="h-full bg-primary"
+                                style={{ width: `${position.weight * 100}%` }}
+                              />
+                            </div>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground">
+                    <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
                       No open positions yet.
                     </TableCell>
                   </TableRow>
