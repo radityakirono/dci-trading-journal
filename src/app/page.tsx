@@ -35,6 +35,7 @@ import {
   createCashJournalEntry,
   createTransaction,
   fetchCashJournal,
+  fetchSignalNotifications,
   fetchTransactions,
 } from "@/lib/api-client";
 import { formatCompactCurrency, formatCurrency, formatPercent } from "@/lib/format";
@@ -50,6 +51,7 @@ import { calculateBrokerFee } from "@/lib/trading";
 import type {
   CashFlowEntry,
   CashFlowEntryInput,
+  SignalNotification,
   Transaction,
   TransactionInput,
 } from "@/lib/types";
@@ -60,38 +62,113 @@ export default function HomePage() {
   const { user } = useAuth();
   const [transactions, setTransactions] = useState<Transaction[]>(initialTransactions);
   const [cashJournal, setCashJournal] = useState<CashFlowEntry[]>(initialCashJournal);
+  const [signals, setSignals] = useState<SignalNotification[]>(initialSignalNotifications);
   const [signalCount, setSignalCount] = useState(0);
   const [syncNotice, setSyncNotice] = useState<string>("");
 
   // ── Derived metrics ─────────────────────────────────
-  const latestEquity = initialEquitySeries[initialEquitySeries.length - 1]?.equity ?? 0;
-  const previousEquity = initialEquitySeries[initialEquitySeries.length - 2]?.equity ?? 0;
-  const dailyPnl = initialEquitySeries[initialEquitySeries.length - 1]?.dailyPnl ?? 0;
+  const equitySeries = useMemo(() => {
+    if (transactions.length === 0 && cashJournal.length === 0) return initialEquitySeries;
+
+    const events = [
+      ...cashJournal.map(c => ({ date: c.date, type: 'CASH' as const, data: c })),
+      ...transactions.map(t => ({ date: t.date, type: 'TX' as const, data: t }))
+    ].sort((a, b) => a.date.localeCompare(b.date));
+
+    if (events.length === 0) return initialEquitySeries;
+
+    const startDate = new Date(events[0].date);
+    const today = new Date();
+    const dates: string[] = [];
+    const curr = new Date(startDate);
+    while (curr <= today) {
+      dates.push(curr.toISOString().slice(0, 10));
+      curr.setUTCDate(curr.getUTCDate() + 1);
+    }
+    const todayStr = today.toISOString().slice(0, 10);
+    if (!dates.includes(todayStr)) dates.push(todayStr);
+
+    let cash = 0;
+    let startingEquity = 0;
+    const holdings = new Map<string, number>();
+    const points: typeof initialEquitySeries = [];
+    
+    let eventIdx = 0;
+    let lastEq = 0;
+
+    for (const date of dates) {
+      while (eventIdx < events.length && events[eventIdx].date <= date) {
+        const ev = events[eventIdx];
+        if (ev.type === 'CASH') {
+          const c = ev.data as CashFlowEntry;
+          if (c.type === 'DEPOSIT') cash += c.amount;
+          else if (c.type === 'WITHDRAWAL') cash -= c.amount;
+          else if (c.type === 'ADJUSTMENT') cash += c.amount;
+          
+          if (startingEquity === 0 && c.type === 'DEPOSIT') {
+            startingEquity = c.amount;
+          }
+        } else if (ev.type === 'TX') {
+          const t = ev.data as Transaction;
+          const gross = t.quantity * SHARES_PER_LOT * t.price;
+          if (t.side === 'BUY') {
+            cash -= (gross + t.fee);
+            holdings.set(t.ticker, (holdings.get(t.ticker) || 0) + t.quantity);
+          } else {
+            cash += (gross - t.fee);
+            const qty = (holdings.get(t.ticker) || 0) - t.quantity;
+            holdings.set(t.ticker, Math.max(0, qty));
+          }
+        }
+        eventIdx++;
+      }
+
+      let portValue = cash;
+      for (const [ticker, qty] of Array.from(holdings.entries())) {
+         portValue += qty * SHARES_PER_LOT * (marketPrices[ticker] || 0);
+      }
+      
+      points.push({
+        date,
+        equity: portValue,
+        pnl: startingEquity > 0 ? portValue - startingEquity : 0,
+        dailyPnl: lastEq > 0 ? portValue - lastEq : 0
+      });
+      
+      lastEq = portValue;
+    }
+
+    return points.length > 2 ? points : initialEquitySeries;
+  }, [transactions, cashJournal]);
+
+  const latestEquity = equitySeries[equitySeries.length - 1]?.equity ?? 0;
+  const previousEquity = equitySeries[equitySeries.length - 2]?.equity ?? 0;
+  const dailyPnl = equitySeries[equitySeries.length - 1]?.dailyPnl ?? 0;
   const dayChange = latestEquity - previousEquity;
   const dayChangePercent = previousEquity > 0 ? dayChange / previousEquity : 0;
 
   // Sparkline data (last 30 equity points)
   const equitySparkData = useMemo(
-    () => initialEquitySeries.slice(-30).map((p) => p.equity),
-    []
+    () => equitySeries.slice(-30).map((p) => p.equity),
+    [equitySeries]
   );
 
   const pnlSparkData = useMemo(
-    () => initialEquitySeries.slice(-30).map((p) => p.dailyPnl),
-    []
+    () => equitySeries.slice(-30).map((p) => p.dailyPnl),
+    [equitySeries]
   );
 
   // Max drawdown
   const maxDrawdown = useMemo(() => {
     let peak = 0;
     let maxDd = 0;
-    for (const point of initialEquitySeries) {
+    for (const point of equitySeries) {
       if (point.equity > peak) peak = point.equity;
       const dd = peak > 0 ? (peak - point.equity) / peak : 0;
       if (dd > maxDd) maxDd = dd;
     }
     return maxDd;
-  }, []);
+  }, [equitySeries]);
 
   // Win rate from sell transactions
   const winRate = useMemo(() => {
@@ -110,7 +187,7 @@ export default function HomePage() {
   }, [transactions]);
 
   // Active signal count
-  const activeSignals = initialSignalNotifications.filter((s) => !s.isRead).length;
+  const activeSignals = signals.filter((s) => !s.isRead).length;
 
   // Portfolio positions for sector exposure
   const positions = useMemo(() => {
@@ -213,16 +290,18 @@ export default function HomePage() {
 
   const loadSignalNotifications = useCallback(async () => {
     try {
-      const res = await fetch("/api/signals?limit=50");
-      if (!res.ok) throw new Error("Failed to load signals");
-      const data = (await res.json()) as {
-        signals: { id: string; read_at: string | null }[];
-      };
-      const unread = (data.signals || []).filter((s) => !s.read_at).length;
+      const remoteSignals = await fetchSignalNotifications(50);
+      setSignals(remoteSignals);
+      const unread = remoteSignals.filter((s) => !s.isRead).length;
       setSignalCount(unread);
     } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        setSignals(initialSignalNotifications);
+        setSignalCount(initialSignalNotifications.filter((s) => !s.isRead).length);
+        return;
+      }
       const message = error instanceof Error ? error.message : "Unexpected error";
-      console.error("Failed to load signal count:", message);
+      console.error("Failed to load signals:", message);
     }
   }, []);
 
@@ -255,7 +334,7 @@ export default function HomePage() {
         <div className="mb-6 flex items-center justify-between">
           <DciLogo />
           <div className="flex items-center gap-2">
-            <NotificationBell unreadCount={signalCount} recentSignals={initialSignalNotifications} />
+            <NotificationBell unreadCount={signalCount} recentSignals={signals} />
             <ThemeToggle />
             <AuthButton />
           </div>
@@ -279,7 +358,7 @@ export default function HomePage() {
             <MetricCard
               label="Portfolio Return"
               value={formatPercent(dayChangePercent * 100 / 100)}
-              delta={`${formatCompactCurrency(latestEquity - initialEquitySeries[0].equity)} total`}
+              delta={`${formatCompactCurrency(latestEquity - (equitySeries[0]?.equity || 0))} total`}
               tone={dayChangePercent >= 0 ? "positive" : "negative"}
               icon={LineChart}
             />
@@ -340,7 +419,7 @@ export default function HomePage() {
         {/* ── 2. Equity Chart + Order Entry ──────────── */}
         <div className="grid gap-6 xl:grid-cols-12">
           <AnimatedSection id="equity" className="h-full xl:col-span-8">
-            <EquityChart data={initialEquitySeries} />
+            <EquityChart data={equitySeries} />
           </AnimatedSection>
           <AnimatedSection id="transactions" className="h-full xl:col-span-4">
             <TransactionForm onCreate={handleCreateTransaction} />
@@ -350,12 +429,12 @@ export default function HomePage() {
         {/* ── 3. Analytics Grid (2×2) ────────────────── */}
         <AnimatedSection id="analytics" className="mt-6">
           <section className="grid gap-4 md:grid-cols-2">
-            <SignalFeed signals={initialSignalNotifications} />
+            <SignalFeed signals={signals} />
             <SectorExposure positions={positions} sectorMap={sectorMap} />
-            <SignalHeatmap signals={initialSignalNotifications} />
+            <SignalHeatmap signals={signals} />
             <StrategyStats
               transactions={transactions}
-              equitySeries={initialEquitySeries}
+              equitySeries={equitySeries}
             />
           </section>
         </AnimatedSection>
