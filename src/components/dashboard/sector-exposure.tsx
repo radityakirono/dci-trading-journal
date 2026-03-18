@@ -63,7 +63,7 @@ export function SectorExposure({ positions, sectorMap }: SectorExposureProps) {
   }, [positions, sectorMap]);
 
   return (
-    <Card className="h-full">
+    <Card className="h-full glass-card">
       <CardHeader className="pb-3">
         <CardTitle className="text-base font-semibold uppercase tracking-wider">
           Sector Exposure

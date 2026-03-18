@@ -346,16 +346,18 @@ export default function HomePage() {
   // ── Render ──────────────────────────────────────────
   return (
     <div className="relative min-h-screen bg-background pb-12">
-      <div className="pointer-events-none absolute inset-0 -z-20 bg-[radial-gradient(90%_70%_at_50%_0%,color-mix(in_oklch,var(--color-primary)_12%,transparent),transparent_72%)]" />
+      <div className="pointer-events-none absolute inset-0 -z-20 bg-[radial-gradient(90%_50%_at_50%_0%,color-mix(in_oklch,var(--color-primary)_8%,transparent),transparent_72%)]" />
 
       <main className="mx-auto w-full max-w-[1440px] px-4 pt-6 sm:px-6 lg:px-8">
         {/* ── Header ─────────────────────────────────── */}
-        <div className="mb-6 flex items-center justify-between">
-          <DciLogo />
-          <div className="flex items-center gap-2">
-            <NotificationBell unreadCount={signalCount} recentSignals={signals} />
-            <ThemeToggle />
-            <AuthButton />
+        <div className="sticky top-0 z-40 -mx-4 mb-6 px-4 py-3 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8 glass-card glow-line rounded-none">
+          <div className="flex items-center justify-between">
+            <DciLogo />
+            <div className="flex items-center gap-2">
+              <NotificationBell unreadCount={signalCount} recentSignals={signals} />
+              <ThemeToggle />
+              <AuthButton />
+            </div>
           </div>
         </div>
 
@@ -468,7 +470,7 @@ export default function HomePage() {
         {/* ── 5. Journal (Trade Journal + Cash Flow) ── */}
         <div className="mt-6">
           <AnimatedSection id="journal">
-            <Card>
+            <Card className="glass-card">
               <CardHeader>
                 <CardTitle className="text-2xl font-semibold">Journal</CardTitle>
               </CardHeader>

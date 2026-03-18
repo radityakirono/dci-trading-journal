@@ -30,7 +30,7 @@ function typeColor(type: string): string {
     case "BUY":
       return "text-emerald-400";
     case "SELL":
-      return "text-red-400";
+      return "text-rose-400";
     case "HOLD":
       return "text-amber-400";
     default:
@@ -56,7 +56,7 @@ export function SignalHeatmap({ signals }: SignalHeatmapProps) {
   }, [signals]);
 
   return (
-    <Card className="h-full">
+    <Card className="h-full glass-card">
       <CardHeader className="pb-3">
         <CardTitle className="text-base font-semibold uppercase tracking-wider">
           Signal Confidence
@@ -71,7 +71,7 @@ export function SignalHeatmap({ signals }: SignalHeatmapProps) {
                 <div
                   key={signal.ticker}
                   className={cn(
-                    "flex flex-col items-center gap-1 rounded-lg px-2 py-2.5 transition-colors",
+                    "flex flex-col items-center gap-1 rounded-lg px-2 py-2.5 transition-all duration-200 hover:scale-105 cursor-default",
                     confidenceColor(signal.confidence)
                   )}
                 >

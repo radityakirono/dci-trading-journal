@@ -23,8 +23,8 @@ const typeConfig: Record<
     label: "BUY",
   },
   SELL: {
-    color: "text-red-400",
-    border: "border-l-red-500",
+    color: "text-rose-400",
+    border: "border-l-rose-500",
     icon: ArrowDown,
     label: "SELL",
   },
@@ -56,13 +56,17 @@ export function SignalFeed({ signals, maxItems = 6 }: SignalFeedProps) {
   const items = signals.slice(0, maxItems);
 
   return (
-    <Card className="h-full">
+    <Card className="h-full glass-card">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base font-semibold uppercase tracking-wider">
+          <CardTitle className="text-base font-semibold uppercase tracking-wider flex items-center gap-2">
             Live Signals
+            <span className="relative flex size-2">
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+            </span>
           </CardTitle>
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-[11px] font-medium text-muted-foreground">
             {signals.length} total
           </span>
         </div>
@@ -80,7 +84,7 @@ export function SignalFeed({ signals, maxItems = 6 }: SignalFeedProps) {
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: idx * 0.05 }}
                 className={cn(
-                  "rounded-lg border-l-2 bg-muted/40 px-3 py-2.5",
+                  "rounded-lg border-l-2 bg-muted/30 px-3 py-2.5 transition-all duration-200 hover:bg-muted/50",
                   cfg.border
                 )}
               >

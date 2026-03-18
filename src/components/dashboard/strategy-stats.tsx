@@ -99,7 +99,7 @@ export function StrategyStats({ transactions, equitySeries }: StrategyStatsProps
   }, [transactions, equitySeries]);
 
   return (
-    <Card className="h-full">
+    <Card className="h-full glass-card">
       <CardHeader className="pb-3">
         <CardTitle className="text-base font-semibold uppercase tracking-wider">
           Strategy Performance
@@ -122,18 +122,18 @@ export function StrategyStats({ transactions, equitySeries }: StrategyStatsProps
                 <TableCell className="text-sm font-medium">{row.label}</TableCell>
                 <TableCell
                   className={cn(
-                    "text-right text-sm",
-                    row.returnPct >= 0 ? "text-emerald-500" : "text-red-500"
+                    "text-right text-sm font-mono",
+                    row.returnPct >= 0 ? "text-emerald-400" : "text-rose-400"
                   )}
                 >
                   {row.returnPct >= 0 ? "+" : ""}
                   {formatPercent(row.returnPct)}
                 </TableCell>
-                <TableCell className="text-right text-sm">
+                <TableCell className="text-right text-sm font-mono">
                   {row.winRate != null ? formatPercent(row.winRate) : "—"}
                 </TableCell>
-                <TableCell className="text-right text-sm">{row.trades}</TableCell>
-                <TableCell className="text-right text-sm">
+                <TableCell className="text-right text-sm font-mono">{row.trades}</TableCell>
+                <TableCell className="text-right text-sm font-mono">
                   {row.sharpe != null ? row.sharpe.toFixed(2) : "—"}
                 </TableCell>
               </TableRow>
