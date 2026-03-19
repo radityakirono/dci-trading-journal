@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
           prices[ticker] = anyQuote.regularMarketPrice;
         }
       } catch (err) {
-        console.warn(`Failed to fetch quote for ${ticker}:`, err);
+        console.warn("Failed to fetch quote for %s:", ticker, err);
       }
     });
 
