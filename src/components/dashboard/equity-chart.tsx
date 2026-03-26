@@ -22,6 +22,12 @@ import {
 } from "@/components/ui/chart";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  buildNormalizedBenchmarkSeries,
+  formatBenchmarkValue,
+  getBenchmarkReturn,
+  type BenchmarkPoint,
+} from "@/lib/benchmark";
+import {
   formatCompactCurrency,
   formatCurrency,
   formatPercent,
@@ -29,13 +35,12 @@ import {
 } from "@/lib/format";
 import type { EquityPoint } from "@/lib/types";
 
-// Added 1D
 type Range = "1D" | "1W" | "1M" | "3M" | "YTD" | "1Y" | "ALL";
 
-type EquityWithBenchmark = EquityPoint & { 
-  ihsgRaw: number;
+type EquityWithBenchmark = EquityPoint & {
+  benchmarkClose: number | null;
   equityNormalized: number;
-  ihsgNormalized: number;
+  benchmarkNormalized: number | null;
 };
 
 const equityConfig = {
@@ -43,7 +48,7 @@ const equityConfig = {
     label: "Portfolio",
     color: "var(--chart-2)",
   },
-  ihsgNormalized: {
+  benchmarkNormalized: {
     label: "IHSG",
     color: "var(--chart-4)",
   },
@@ -58,9 +63,15 @@ const pnlConfig = {
 
 interface EquityChartProps {
   data: EquityPoint[];
+  benchmarkSeries?: BenchmarkPoint[];
+  isBenchmarkLoading?: boolean;
 }
 
-export function EquityChart({ data }: EquityChartProps) {
+export function EquityChart({
+  data,
+  benchmarkSeries = [],
+  isBenchmarkLoading = false,
+}: EquityChartProps) {
   const [range, setRange] = useState<Range>("3M");
 
   const filteredData = useMemo(() => {
@@ -91,62 +102,56 @@ export function EquityChart({ data }: EquityChartProps) {
     if (!filteredData.length) return [];
 
     const baseEquity = filteredData[0].equity;
-    
-    return filteredData.map((point, index) => {
-      // Mock IHSG value
-      const marketDrift = index * 0.00035;
-      const marketWave = Math.sin(index / 8) * 0.008 + Math.cos(index / 17) * 0.004;
-      const ihsgRaw = Math.max(baseEquity * 0.75, baseEquity * (1 + marketDrift + marketWave));
+    const benchmarkOverlay = buildNormalizedBenchmarkSeries(filteredData, benchmarkSeries);
 
-      // Calculate normalized returns from the start of the period
-      const equityNormalized = baseEquity !== 0 ? (point.equity - baseEquity) / baseEquity : 0;
-      const ihsgNormalized = baseEquity !== 0 ? (ihsgRaw - baseEquity) / baseEquity : 0;
-
-      return {
-        ...point,
-        ihsgRaw,
-        equityNormalized,
-        ihsgNormalized,
-      };
-    });
-  }, [filteredData]);
+    return filteredData.map((point, index) => ({
+      ...point,
+      benchmarkClose: benchmarkOverlay[index]?.benchmarkClose ?? null,
+      equityNormalized: baseEquity !== 0 ? (point.equity - baseEquity) / baseEquity : 0,
+      benchmarkNormalized: benchmarkOverlay[index]?.benchmarkReturn ?? null,
+    }));
+  }, [benchmarkSeries, filteredData]);
 
   const latestPoint = chartData[chartData.length - 1];
   const firstPoint = chartData[0];
-
   const netChange = (latestPoint?.equity ?? 0) - (firstPoint?.equity ?? 0);
-  const netChangeRatio =
-    firstPoint && firstPoint.equity !== 0 ? netChange / firstPoint.equity : 0;
-
-  const ihsgChange =
-    firstPoint && latestPoint && firstPoint.ihsgRaw !== 0
-      ? (latestPoint.ihsgRaw - firstPoint.ihsgRaw) / firstPoint.ihsgRaw
-      : 0;
-
-  const relativeOutperformance = netChangeRatio - ihsgChange;
+  const portfolioReturn =
+    firstPoint && firstPoint.equity !== 0 ? netChange / firstPoint.equity : null;
+  const benchmarkReturn =
+    filteredData.length > 0
+      ? getBenchmarkReturn(
+          benchmarkSeries,
+          filteredData[0].date,
+          filteredData[filteredData.length - 1].date
+        )
+      : null;
+  const relativeOutperformance =
+    portfolioReturn != null && benchmarkReturn != null
+      ? portfolioReturn - benchmarkReturn
+      : null;
 
   return (
-    <Card className="h-full flex flex-col">
+    <Card className="flex h-full flex-col">
       <CardHeader className="gap-4 pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-2xl font-semibold">Equity</CardTitle>
           <Tabs
             value={range}
             onValueChange={(value) => setRange(value as Range)}
-            className="w-auto hidden sm:block"
+            className="hidden w-auto sm:block"
           >
-            <TabsList className="h-8">
-              <TabsTrigger value="1D" className="text-xs px-2 h-6">1D</TabsTrigger>
-              <TabsTrigger value="1W" className="text-xs px-2 h-6">1W</TabsTrigger>
-              <TabsTrigger value="1M" className="text-xs px-2 h-6">1M</TabsTrigger>
-              <TabsTrigger value="3M" className="text-xs px-2 h-6">3M</TabsTrigger>
-              <TabsTrigger value="YTD" className="text-xs px-2 h-6">YTD</TabsTrigger>
-              <TabsTrigger value="1Y" className="text-xs px-2 h-6">1Y</TabsTrigger>
-              <TabsTrigger value="ALL" className="text-xs px-2 h-6">MAX</TabsTrigger>
+            <TabsList className="h-8" aria-label="Select equity chart timeframe">
+              <TabsTrigger value="1D" className="h-6 px-2 text-xs">1D</TabsTrigger>
+              <TabsTrigger value="1W" className="h-6 px-2 text-xs">1W</TabsTrigger>
+              <TabsTrigger value="1M" className="h-6 px-2 text-xs">1M</TabsTrigger>
+              <TabsTrigger value="3M" className="h-6 px-2 text-xs">3M</TabsTrigger>
+              <TabsTrigger value="YTD" className="h-6 px-2 text-xs">YTD</TabsTrigger>
+              <TabsTrigger value="1Y" className="h-6 px-2 text-xs">1Y</TabsTrigger>
+              <TabsTrigger value="ALL" className="h-6 px-2 text-xs">MAX</TabsTrigger>
             </TabsList>
           </Tabs>
         </div>
-        
+
         <div className="flex flex-wrap gap-5 text-small">
           <div className="space-y-1">
             <p className="text-muted-foreground">Current Equity</p>
@@ -156,50 +161,87 @@ export function EquityChart({ data }: EquityChartProps) {
           </div>
           <div className="space-y-1">
             <p className="text-muted-foreground">Portfolio Return</p>
-            <p className={netChange >= 0 ? "text-emerald-500 font-medium" : "text-red-500 font-medium"}>
-              {netChange >= 0 ? "+" : ""}{formatCurrency(netChange)} ({netChangeRatio >= 0 ? "+" : ""}{formatPercent(netChangeRatio)})
+            <p
+              className={
+                (portfolioReturn ?? 0) >= 0
+                  ? "font-medium text-emerald-500"
+                  : "font-medium text-red-500"
+              }
+            >
+              {netChange >= 0 ? "+" : ""}
+              {formatCurrency(netChange)}{" "}
+              ({portfolioReturn != null ? `${portfolioReturn >= 0 ? "+" : ""}${formatPercent(portfolioReturn)}` : "N/A"})
             </p>
           </div>
-          <div className="space-y-1 hidden min-[400px]:block">
+          <div className="hidden min-[400px]:block space-y-1">
             <p className="text-muted-foreground">IHSG Return</p>
-            <p className={ihsgChange >= 0 ? "text-emerald-500 font-medium" : "text-red-500 font-medium"}>
-               {ihsgChange >= 0 ? "+" : ""}{formatPercent(ihsgChange)}
+            <p
+              className={
+                benchmarkReturn == null
+                  ? "font-medium text-muted-foreground"
+                  : benchmarkReturn >= 0
+                    ? "font-medium text-emerald-500"
+                    : "font-medium text-red-500"
+              }
+            >
+              {benchmarkReturn != null
+                ? `${benchmarkReturn >= 0 ? "+" : ""}${formatPercent(benchmarkReturn)}`
+                : isBenchmarkLoading
+                  ? "Loading..."
+                  : "N/A"}
             </p>
           </div>
-          <div className="space-y-1 hidden sm:block">
+          <div className="hidden space-y-1 sm:block">
             <p className="text-muted-foreground">Alpha (Relative)</p>
             <p
               className={
-                relativeOutperformance >= 0 ? "text-emerald-500 font-medium tracking-tight bg-emerald-500/10 px-1.5 py-0.5 rounded-md" : "text-red-500 font-medium tracking-tight bg-red-500/10 px-1.5 py-0.5 rounded-md"
+                relativeOutperformance == null
+                  ? "rounded-md bg-muted/30 px-1.5 py-0.5 font-medium tracking-tight text-muted-foreground"
+                  : relativeOutperformance >= 0
+                    ? "rounded-md bg-emerald-500/10 px-1.5 py-0.5 font-medium tracking-tight text-emerald-500"
+                    : "rounded-md bg-red-500/10 px-1.5 py-0.5 font-medium tracking-tight text-red-500"
               }
             >
-              {relativeOutperformance >= 0 ? "+" : ""}
-              {formatPercent(relativeOutperformance)}
+              {relativeOutperformance != null
+                ? `${relativeOutperformance >= 0 ? "+" : ""}${formatPercent(relativeOutperformance)}`
+                : isBenchmarkLoading
+                  ? "Loading..."
+                  : "N/A"}
             </p>
           </div>
         </div>
-        
-        {/* Mobile Tabs */}
-        <div className="sm:hidden pt-2">
-            <Tabs
-              value={range}
-              onValueChange={(value) => setRange(value as Range)}
-              className="w-full"
+
+        <div className="pt-2 sm:hidden">
+          <p className="mb-2 text-xs text-muted-foreground">
+            Swipe to change the chart timeframe.
+          </p>
+          <Tabs
+            value={range}
+            onValueChange={(value) => setRange(value as Range)}
+            className="w-full"
+          >
+            <TabsList
+              className="h-8 w-full justify-start overflow-x-auto"
+              aria-label="Select equity chart timeframe"
             >
-              <TabsList className="w-full justify-start h-8 overflow-x-auto">
-                <TabsTrigger value="1D" className="text-xs px-2 h-6">1D</TabsTrigger>
-                <TabsTrigger value="1W" className="text-xs px-2 h-6">1W</TabsTrigger>
-                <TabsTrigger value="1M" className="text-xs px-2 h-6">1M</TabsTrigger>
-                <TabsTrigger value="3M" className="text-xs px-2 h-6">3M</TabsTrigger>
-                <TabsTrigger value="YTD" className="text-xs px-2 h-6">YTD</TabsTrigger>
-                <TabsTrigger value="1Y" className="text-xs px-2 h-6">1Y</TabsTrigger>
-                <TabsTrigger value="ALL" className="text-xs px-2 h-6">MAX</TabsTrigger>
-              </TabsList>
-            </Tabs>
+              <TabsTrigger value="1D" className="h-6 px-2 text-xs">1D</TabsTrigger>
+              <TabsTrigger value="1W" className="h-6 px-2 text-xs">1W</TabsTrigger>
+              <TabsTrigger value="1M" className="h-6 px-2 text-xs">1M</TabsTrigger>
+              <TabsTrigger value="3M" className="h-6 px-2 text-xs">3M</TabsTrigger>
+              <TabsTrigger value="YTD" className="h-6 px-2 text-xs">YTD</TabsTrigger>
+              <TabsTrigger value="1Y" className="h-6 px-2 text-xs">1Y</TabsTrigger>
+              <TabsTrigger value="ALL" className="h-6 px-2 text-xs">MAX</TabsTrigger>
+            </TabsList>
+          </Tabs>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4 flex-1 flex flex-col justify-end pt-0">
-        <ChartContainer config={equityConfig} className="h-[250px] w-full mt-auto">
+      <CardContent className="flex flex-1 flex-col justify-end space-y-4 pt-0">
+        <ChartContainer
+          config={equityConfig}
+          className="mt-auto h-[250px] w-full"
+          role="img"
+          aria-label="Portfolio equity performance compared with the IHSG benchmark"
+        >
           <AreaChart data={chartData} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
             <defs>
               <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
@@ -207,7 +249,12 @@ export function EquityChart({ data }: EquityChartProps) {
                 <stop offset="95%" stopColor="var(--color-equityNormalized)" stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
+            <CartesianGrid
+              vertical={false}
+              strokeDasharray="3 3"
+              stroke="var(--border)"
+              opacity={0.5}
+            />
             <XAxis
               dataKey="date"
               axisLine={false}
@@ -222,38 +269,40 @@ export function EquityChart({ data }: EquityChartProps) {
               axisLine={false}
               tickLine={false}
               width={65}
-              tickFormatter={(val) => `${val > 0 ? "+" : ""}${(val * 100).toFixed(1)}%`}
+              tickFormatter={(value) => `${value > 0 ? "+" : ""}${(value * 100).toFixed(1)}%`}
               fontSize={12}
               stroke="var(--muted-foreground)"
               dx={-5}
             />
             <ChartTooltip
-              cursor={{ stroke: 'var(--muted-foreground)', strokeWidth: 1, strokeDasharray: '4 4' }}
+              cursor={{
+                stroke: "var(--muted-foreground)",
+                strokeWidth: 1,
+                strokeDasharray: "4 4",
+              }}
               content={
                 <ChartTooltipContent
                   indicator="line"
                   labelFormatter={(value) => formatShortDate(String(value))}
-                  formatter={(value, name, item, index) => {
-                     // Get the absolute raw value depending on the line
-                     const rawValue = name === "equityNormalized" 
-                          ? item.payload.equity 
-                          : item.payload.ihsgRaw;
-                     
-                     return (
-                         <div className="flex flex-col gap-0.5">
-                             <div className="font-medium">
-                                 {Number(value) > 0 ? "+" : ""}{formatPercent(Number(value))}
-                             </div>
-                             <div className="text-[10px] text-muted-foreground">
-                                 {formatCompactCurrency(rawValue)}
-                             </div>
-                         </div>
-                     );
+                  formatter={(value, name, item) => {
+                    const rawValue =
+                      name === "equityNormalized"
+                        ? formatCompactCurrency(item.payload.equity)
+                        : formatBenchmarkValue(item.payload.benchmarkClose);
+
+                    return (
+                      <div className="flex flex-col gap-0.5">
+                        <div className="font-medium">
+                          {Number(value) > 0 ? "+" : ""}
+                          {formatPercent(Number(value))}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">{rawValue}</div>
+                      </div>
+                    );
                   }}
                 />
               }
             />
-            {/* Base Zero Line */}
             <Line
               type="linear"
               dataKey={() => 0}
@@ -273,21 +322,27 @@ export function EquityChart({ data }: EquityChartProps) {
             />
             <Line
               type="monotone"
-              dataKey="ihsgNormalized"
-              stroke="var(--color-ihsgNormalized)"
+              dataKey="benchmarkNormalized"
+              stroke="var(--color-benchmarkNormalized)"
               strokeWidth={1.8}
               dot={false}
+              connectNulls={false}
               activeDot={{ r: 4, strokeWidth: 0 }}
               strokeDasharray="5 5"
             />
           </AreaChart>
         </ChartContainer>
 
-        <div className="rounded-xl border border-border/60 p-3 bg-muted/20">
+        <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
           <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-            Daily Profit & Loss
+            Daily Profit &amp; Loss
           </p>
-          <ChartContainer config={pnlConfig} className="h-[90px] w-full">
+          <ChartContainer
+            config={pnlConfig}
+            className="h-[90px] w-full"
+            role="img"
+            aria-label="Daily profit and loss bar chart"
+          >
             <BarChart data={chartData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
               <XAxis
                 dataKey="date"
@@ -299,7 +354,7 @@ export function EquityChart({ data }: EquityChartProps) {
               />
               <YAxis hide />
               <ChartTooltip
-                cursor={{ fill: 'var(--muted)', opacity: 0.4 }}
+                cursor={{ fill: "var(--muted)", opacity: 0.4 }}
                 content={
                   <ChartTooltipContent
                     indicator="dot"
@@ -310,9 +365,13 @@ export function EquityChart({ data }: EquityChartProps) {
               />
               <Bar dataKey="dailyPnl" radius={[4, 4, 0, 0]}>
                 {chartData.map((entry, index) => (
-                  <Cell 
-                    key={`cell-${index}`} 
-                    fill={entry.dailyPnl >= 0 ? "var(--color-dailyPnl)" : "hsl(var(--destructive))"} 
+                  <Cell
+                    key={`cell-${index}`}
+                    fill={
+                      entry.dailyPnl >= 0
+                        ? "var(--color-dailyPnl)"
+                        : "hsl(var(--destructive))"
+                    }
                   />
                 ))}
               </Bar>

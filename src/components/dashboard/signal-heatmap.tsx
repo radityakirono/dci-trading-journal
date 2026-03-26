@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo } from "react";
-import { ArrowDown, ArrowUp, Diamond, Minus } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -11,47 +10,33 @@ interface SignalHeatmapProps {
   signals: SignalNotification[];
 }
 
-const typeIcons: Record<string, React.ElementType> = {
-  BUY: ArrowUp,
-  SELL: ArrowDown,
-  HOLD: Minus,
-  ALERT: Diamond,
-};
-
-function confidenceColor(c: number | null | undefined): string {
-  if (c == null) return "bg-muted/40";
-  if (c >= 0.8) return "bg-emerald-500/20 ring-1 ring-emerald-500/30";
-  if (c >= 0.6) return "bg-amber-500/15 ring-1 ring-amber-500/25";
-  return "bg-red-500/10 ring-1 ring-red-500/20";
+function confidenceBarTone(confidence: number | null | undefined) {
+  if (confidence == null) return "bg-muted";
+  if (confidence >= 0.8) return "bg-emerald-500";
+  if (confidence >= 0.6) return "bg-amber-500";
+  return "bg-red-500";
 }
 
-function typeColor(type: string): string {
-  switch (type) {
-    case "BUY":
-      return "text-emerald-400";
-    case "SELL":
-      return "text-rose-400";
-    case "HOLD":
-      return "text-amber-400";
-    default:
-      return "text-blue-400";
-  }
+function confidenceTextTone(confidence: number | null | undefined) {
+  if (confidence == null) return "text-muted-foreground";
+  if (confidence >= 0.8) return "text-emerald-400";
+  if (confidence >= 0.6) return "text-amber-400";
+  return "text-red-400";
 }
 
 export function SignalHeatmap({ signals }: SignalHeatmapProps) {
-  // Deduplicate: latest signal per ticker
   const latestByTicker = useMemo(() => {
     const map = new Map<string, SignalNotification>();
-    for (const s of signals) {
-      const existing = map.get(s.ticker);
-      if (!existing || new Date(s.createdAt) > new Date(existing.createdAt)) {
-        map.set(s.ticker, s);
+    for (const signal of signals) {
+      const existing = map.get(signal.ticker);
+      if (!existing || new Date(signal.createdAt) > new Date(existing.createdAt)) {
+        map.set(signal.ticker, signal);
       }
     }
-    return Array.from(map.values()).sort((a, b) => {
-      const ca = a.confidence ?? 0;
-      const cb = b.confidence ?? 0;
-      return cb - ca;
+    return Array.from(map.values()).sort((left, right) => {
+      const leftConfidence = left.confidence ?? 0;
+      const rightConfidence = right.confidence ?? 0;
+      return rightConfidence - leftConfidence;
     });
   }, [signals]);
 
@@ -64,24 +49,26 @@ export function SignalHeatmap({ signals }: SignalHeatmapProps) {
       </CardHeader>
       <CardContent>
         {latestByTicker.length > 0 ? (
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+          <div className="space-y-3">
             {latestByTicker.map((signal) => {
-              const Icon = typeIcons[signal.type] ?? Diamond;
+              const confidence = signal.confidence ?? 0;
+              const width = Math.max(8, Math.round(confidence * 100));
               return (
-                <div
-                  key={signal.ticker}
-                  className={cn(
-                    "flex flex-col items-center gap-1 rounded-lg px-2 py-2.5 transition-all duration-200 hover:scale-105 cursor-default",
-                    confidenceColor(signal.confidence)
-                  )}
-                >
-                  <Icon className={cn("size-3.5", typeColor(signal.type))} />
-                  <span className="text-sm font-semibold">{signal.ticker}</span>
-                  <span className="text-[11px] text-muted-foreground">
-                    {signal.confidence != null
-                      ? `${Math.round(signal.confidence * 100)}%`
-                      : "—"}
-                  </span>
+                <div key={signal.ticker} className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="font-semibold">{signal.ticker}</span>
+                    <span className={cn("font-mono", confidenceTextTone(signal.confidence))}>
+                      {signal.confidence != null
+                        ? `${Math.round(confidence * 100)}%`
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-muted/70">
+                    <div
+                      className={cn("h-full rounded-full transition-[width]", confidenceBarTone(signal.confidence))}
+                      style={{ width: `${width}%` }}
+                    />
+                  </div>
                 </div>
               );
             })}

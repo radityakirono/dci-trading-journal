@@ -1,9 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, BellRing } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { PriceTargetDialog } from "@/components/dashboard/price-target-dialog";
 import {
   Card,
   CardContent,
@@ -33,8 +35,9 @@ import {
   formatNumber,
   formatPercent,
 } from "@/lib/format";
+import type { MarketPriceSnapshot } from "@/lib/market";
 import { cn } from "@/lib/utils";
-import type { Transaction } from "@/lib/types";
+import type { PriceTargetWatch, Transaction } from "@/lib/types";
 
 const SHARES_PER_LOT = 100;
 
@@ -62,17 +65,89 @@ interface SortConfig {
 interface PortfolioTableProps {
   transactions: Transaction[];
   marketPrices: Record<string, number>;
+  marketData: Record<string, MarketPriceSnapshot>;
+  priceTargets?: PriceTargetWatch[];
+  onSavePriceTarget?: (input: {
+    ticker: string;
+    targetPrice: number;
+    currentPrice: number | null;
+  }) => Promise<void>;
+  onClearPriceTarget?: (ticker: string) => Promise<void>;
+}
+
+function SortableHead({
+  label,
+  sortKey,
+  align = "left",
+  sortConfig,
+  onSort,
+}: {
+  label: string;
+  sortKey: SortKey;
+  align?: "left" | "right";
+  sortConfig: SortConfig;
+  onSort: (key: SortKey) => void;
+}) {
+  const isActive = sortConfig.key === sortKey;
+  const ariaSort = isActive
+    ? sortConfig.direction === "asc"
+      ? "ascending"
+      : "descending"
+    : "none";
+
+  return (
+    <TableHead
+      scope="col"
+      aria-sort={ariaSort}
+      className={cn(
+        "select-none",
+        align === "right" && "text-right"
+      )}
+    >
+      <button
+        type="button"
+        className={cn(
+          "flex w-full items-center gap-1 rounded-sm transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+          align === "right" && "justify-end"
+        )}
+        onClick={() => onSort(sortKey)}
+      >
+        <span>{label}</span>
+        {isActive ? (
+          sortConfig.direction === "asc" ? (
+            <ArrowUp className="size-3" />
+          ) : (
+            <ArrowDown className="size-3" />
+          )
+        ) : (
+          <ArrowUpDown className="size-3 opacity-20" />
+        )}
+        <span className="sr-only">
+          {isActive && sortConfig.direction === "desc"
+            ? `Activate to sort ${label} ascending`
+            : `Activate to sort ${label} descending`}
+        </span>
+      </button>
+    </TableHead>
+  );
 }
 
 export function PortfolioTable({
   transactions,
   marketPrices,
+  marketData,
+  priceTargets = [],
+  onSavePriceTarget,
+  onClearPriceTarget,
 }: PortfolioTableProps) {
   const [historyTicker, setHistoryTicker] = useState<string>("ALL");
   const [sortConfig, setSortConfig] = useState<SortConfig>({
     key: "marketValue",
     direction: "desc",
   });
+  const [targetDialogTicker, setTargetDialogTicker] = useState<string | null>(null);
+  const [isSavingTarget, setIsSavingTarget] = useState(false);
+  const [targetError, setTargetError] = useState("");
 
   const positions = useMemo(() => {
     const positionMap = new Map<
@@ -112,8 +187,8 @@ export function PortfolioTable({
         const unrealizedPnL = marketValue - value.costBasis;
         const unrealizedPnLPct = value.costBasis > 0 ? unrealizedPnL / value.costBasis : 0;
 
-        // Mock a previous close / day change for UI purposes
-        const mockDayChange = value.marketPrice * ((ticker.length * 0.005) * (ticker.charCodeAt(0) % 2 === 0 ? 1 : -1));
+        const snapshot = marketData[ticker];
+        const actualDayChange = snapshot?.change ?? 0;
 
         return {
           ticker,
@@ -121,7 +196,7 @@ export function PortfolioTable({
           costBasis: value.costBasis,
           averageCost,
           marketPrice: value.marketPrice,
-          dayChange: mockDayChange,
+          dayChange: actualDayChange,
           marketValue,
           unrealizedPnL,
           unrealizedPnLPct,
@@ -144,7 +219,7 @@ export function PortfolioTable({
       if (aVal > bVal) return sortConfig.direction === "asc" ? 1 : -1;
       return 0;
     });
-  }, [marketPrices, transactions, sortConfig]);
+  }, [marketData, marketPrices, transactions, sortConfig]);
 
   const transactionHistory = useMemo(
     () => [...transactions].sort((a, b) => b.date.localeCompare(a.date)),
@@ -178,39 +253,71 @@ export function PortfolioTable({
     }));
   };
 
-  const SortableHead = ({ label, sortKey, align = "left" }: { label: string; sortKey: SortKey; align?: "left" | "right" }) => (
-    <TableHead
-      className={cn("cursor-pointer select-none hover:text-foreground", align === "right" && "text-right")}
-      onClick={() => handleSort(sortKey)}
-    >
-      <div className={cn("flex items-center gap-1", align === "right" && "justify-end")}>
-        {label}
-        {sortConfig.key === sortKey ? (
-          sortConfig.direction === "asc" ? (
-            <ArrowUp className="size-3" />
-          ) : (
-            <ArrowDown className="size-3" />
-          )
-        ) : (
-          <ArrowUpDown className="size-3 opacity-20" />
-        )}
-      </div>
-    </TableHead>
+  const targetMap = useMemo(
+    () => Object.fromEntries(priceTargets.map((target) => [target.ticker, target])),
+    [priceTargets]
   );
+  const activeTarget = targetDialogTicker ? targetMap[targetDialogTicker] ?? null : null;
+  const activeTargetPosition = targetDialogTicker
+    ? positions.find((position) => position.ticker === targetDialogTicker) ?? null
+    : null;
+
+  async function handleSaveTarget(input: {
+    ticker: string;
+    targetPrice: number;
+    currentPrice: number | null;
+  }) {
+    if (!onSavePriceTarget) return;
+    if (!Number.isFinite(input.targetPrice) || input.targetPrice <= 0) {
+      setTargetError("Target price must be greater than zero.");
+      return;
+    }
+
+    try {
+      setIsSavingTarget(true);
+      setTargetError("");
+      await onSavePriceTarget(input);
+      setTargetDialogTicker(null);
+    } catch (error) {
+      setTargetError(
+        error instanceof Error ? error.message : "Failed to save price target."
+      );
+    } finally {
+      setIsSavingTarget(false);
+    }
+  }
+
+  async function handleClearTarget(ticker: string) {
+    if (!onClearPriceTarget) return;
+
+    try {
+      setIsSavingTarget(true);
+      setTargetError("");
+      await onClearPriceTarget(ticker);
+      setTargetDialogTicker(null);
+    } catch (error) {
+      setTargetError(
+        error instanceof Error ? error.message : "Failed to clear price target."
+      );
+    } finally {
+      setIsSavingTarget(false);
+    }
+  }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-2xl font-semibold">Portfolio</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <Tabs defaultValue="positions" className="gap-4">
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-2xl font-semibold">Portfolio</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Tabs defaultValue="positions" className="gap-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <TabsList>
+            <TabsList className="w-full justify-start overflow-x-auto sm:w-auto">
               <TabsTrigger value="positions">Open Positions</TabsTrigger>
               <TabsTrigger value="history">Transaction History</TabsTrigger>
             </TabsList>
-            <div className="grid gap-1 text-right text-small">
+            <div className="grid gap-1 text-small sm:text-right">
               <span className="text-muted-foreground">
                 Market Value: {formatCompactCurrency(totalMarketValue)}
               </span>
@@ -225,31 +332,48 @@ export function PortfolioTable({
           </div>
 
           <TabsContent value="positions" className="overflow-x-auto">
+            <p className="mb-2 text-xs text-muted-foreground sm:hidden">
+              Swipe sideways to see all position columns.
+            </p>
             <Table className="min-w-[800px]">
               <TableHeader>
                 <TableRow>
-                  <SortableHead label="Ticker" sortKey="ticker" />
-                  <SortableHead label="Qty (lots)" sortKey="quantity" align="right" />
-                  <SortableHead label="Avg Cost" sortKey="averageCost" align="right" />
-                  <SortableHead label="Last Price" sortKey="marketPrice" align="right" />
-                  <SortableHead label="Day Change" sortKey="dayChange" align="right" />
-                  <SortableHead label="Market Value" sortKey="marketValue" align="right" />
-                  <SortableHead label="Cost Basis" sortKey="costBasis" align="right" />
-                  <SortableHead label="Unrealized P/L" sortKey="unrealizedPnL" align="right" />
-                  <SortableHead label="Weight %" sortKey="weight" align="right" />
+                  <SortableHead label="Ticker" sortKey="ticker" sortConfig={sortConfig} onSort={handleSort} />
+                  <SortableHead label="Qty (lots)" sortKey="quantity" align="right" sortConfig={sortConfig} onSort={handleSort} />
+                  <SortableHead label="Avg Cost" sortKey="averageCost" align="right" sortConfig={sortConfig} onSort={handleSort} />
+                  <SortableHead label="Last Price" sortKey="marketPrice" align="right" sortConfig={sortConfig} onSort={handleSort} />
+                  <SortableHead label="Day Change" sortKey="dayChange" align="right" sortConfig={sortConfig} onSort={handleSort} />
+                  <SortableHead label="Market Value" sortKey="marketValue" align="right" sortConfig={sortConfig} onSort={handleSort} />
+                  <SortableHead label="Cost Basis" sortKey="costBasis" align="right" sortConfig={sortConfig} onSort={handleSort} />
+                  <SortableHead label="Unrealized P/L" sortKey="unrealizedPnL" align="right" sortConfig={sortConfig} onSort={handleSort} />
+                  <SortableHead label="Weight %" sortKey="weight" align="right" sortConfig={sortConfig} onSort={handleSort} />
+                  <TableHead className="text-right">Target Alert</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {positions.length > 0 ? (
                   positions.map((position) => {
-                    const dayChangePct = position.marketPrice > 0 ? position.dayChange / position.marketPrice : 0;
+                    const snapshot = marketData[position.ticker];
+                    const dayChangePct =
+                      snapshot?.prevClose && snapshot.prevClose > 0
+                        ? position.dayChange / snapshot.prevClose
+                        : position.marketPrice > 0
+                          ? position.dayChange / position.marketPrice
+                          : 0;
                     return (
                       <TableRow key={position.ticker} className="group hover:bg-muted/30">
                         <TableCell className="font-semibold">{position.ticker}</TableCell>
                         <TableCell className="text-right">{formatNumber(position.quantity)}</TableCell>
                         <TableCell className="text-right">{formatCurrency(position.averageCost)}</TableCell>
                         <TableCell className="text-right font-medium transition-colors">
-                          {formatCurrency(position.marketPrice)}
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span>{formatCurrency(position.marketPrice)}</span>
+                            {snapshot?.isDelayed ? (
+                              <Badge variant="outline" className="h-4 px-1 py-0 text-[10px] text-amber-300">
+                                Delayed
+                              </Badge>
+                            ) : null}
+                          </div>
                         </TableCell>
                         <TableCell className={cn("text-right text-[13px]", position.dayChange >= 0 ? "text-emerald-500" : "text-red-500")}>
                           {position.dayChange >= 0 ? "+" : ""}{formatCurrency(position.dayChange)}
@@ -278,12 +402,42 @@ export function PortfolioTable({
                             </div>
                           </div>
                         </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex flex-col items-end gap-2">
+                            {targetMap[position.ticker] ? (
+                              <div className="text-right">
+                                <p className="text-xs font-medium">
+                                  {formatCurrency(targetMap[position.ticker].targetPrice)}
+                                </p>
+                                <p className="text-[11px] text-muted-foreground">
+                                  Trigger {targetMap[position.ticker].direction}
+                                </p>
+                              </div>
+                            ) : (
+                              <p className="text-[11px] text-muted-foreground">
+                                No target
+                              </p>
+                            )}
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="xs"
+                              onClick={() => {
+                                setTargetError("");
+                                setTargetDialogTicker(position.ticker);
+                              }}
+                            >
+                              <BellRing className="size-3" />
+                              {targetMap[position.ticker] ? "Edit" : "Set Target"}
+                            </Button>
+                          </div>
+                        </TableCell>
                       </TableRow>
                     );
                   })
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
                       No open positions yet.
                     </TableCell>
                   </TableRow>
@@ -293,7 +447,7 @@ export function PortfolioTable({
           </TabsContent>
 
           <TabsContent value="history">
-            <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-small text-muted-foreground">Filter by ticker</p>
               <Select
                 value={historyTicker}
@@ -311,60 +465,132 @@ export function PortfolioTable({
                 </SelectContent>
               </Select>
             </div>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Ticker</TableHead>
-                  <TableHead>Side</TableHead>
-                  <TableHead>Quantity (lots)</TableHead>
-                  <TableHead>Price</TableHead>
-                  <TableHead>Fee</TableHead>
-                  <TableHead>Cash Impact</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredHistory.length > 0 ? (
-                  filteredHistory.map((trade) => {
-                    const gross = trade.quantity * SHARES_PER_LOT * trade.price;
-                    const cashImpact =
-                      trade.side === "BUY" ? -(gross + trade.fee) : gross - trade.fee;
-                    return (
-                      <TableRow key={trade.id}>
-                        <TableCell>{formatLongDate(trade.date)}</TableCell>
-                        <TableCell className="font-medium">{trade.ticker}</TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={trade.side === "BUY" ? "default" : "secondary"}
-                          >
-                            {trade.side === "BUY" ? "BUY" : "SELL"}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>{formatNumber(trade.quantity)}</TableCell>
-                        <TableCell>{formatCurrency(trade.price)}</TableCell>
-                        <TableCell>{formatCurrency(trade.fee)}</TableCell>
-                        <TableCell
-                          className={
-                            cashImpact >= 0 ? "text-emerald-500" : "text-red-500"
-                          }
-                        >
-                          {formatCurrency(cashImpact)}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
-                ) : (
+            <div className="hidden md:block">
+              <Table>
+                <TableHeader>
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-muted-foreground">
-                      No transactions for this filter.
-                    </TableCell>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Ticker</TableHead>
+                    <TableHead>Side</TableHead>
+                    <TableHead>Quantity (lots)</TableHead>
+                    <TableHead>Price</TableHead>
+                    <TableHead>Fee</TableHead>
+                    <TableHead>Cash Impact</TableHead>
                   </TableRow>
-                )}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {filteredHistory.length > 0 ? (
+                    filteredHistory.map((trade) => {
+                      const gross = trade.quantity * SHARES_PER_LOT * trade.price;
+                      const cashImpact =
+                        trade.side === "BUY" ? -(gross + trade.fee) : gross - trade.fee;
+                      return (
+                        <TableRow key={trade.id}>
+                          <TableCell>{formatLongDate(trade.date)}</TableCell>
+                          <TableCell className="font-medium">{trade.ticker}</TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={trade.side === "BUY" ? "default" : "secondary"}
+                            >
+                              {trade.side === "BUY" ? "BUY" : "SELL"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>{formatNumber(trade.quantity)}</TableCell>
+                          <TableCell>{formatCurrency(trade.price)}</TableCell>
+                          <TableCell>{formatCurrency(trade.fee)}</TableCell>
+                          <TableCell
+                            className={
+                              cashImpact >= 0 ? "text-emerald-500" : "text-red-500"
+                            }
+                          >
+                            {formatCurrency(cashImpact)}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={7} className="text-center text-muted-foreground">
+                        No transactions for this filter.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="space-y-3 md:hidden">
+              {filteredHistory.length > 0 ? (
+                filteredHistory.map((trade) => {
+                  const gross = trade.quantity * SHARES_PER_LOT * trade.price;
+                  const cashImpact =
+                    trade.side === "BUY" ? -(gross + trade.fee) : gross - trade.fee;
+                  return (
+                    <div key={trade.id} className="rounded-xl border border-border/60 bg-muted/20 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold">{trade.ticker}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {formatLongDate(trade.date)}
+                          </p>
+                        </div>
+                        <Badge variant={trade.side === "BUY" ? "default" : "secondary"}>
+                          {trade.side}
+                        </Badge>
+                      </div>
+                      <div className="mt-4 grid gap-2 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Quantity</span>
+                          <span>{formatNumber(trade.quantity)} lots</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Price</span>
+                          <span>{formatCurrency(trade.price)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Fee</span>
+                          <span>{formatCurrency(trade.fee)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Cash Impact</span>
+                          <span
+                            className={cashImpact >= 0 ? "text-emerald-500" : "text-red-500"}
+                          >
+                            {formatCurrency(cashImpact)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <p className="py-8 text-center text-sm text-muted-foreground">
+                  No transactions for this filter.
+                </p>
+              )}
+            </div>
           </TabsContent>
-        </Tabs>
-      </CardContent>
-    </Card>
+          </Tabs>
+        </CardContent>
+      </Card>
+
+      <PriceTargetDialog
+        key={activeTarget?.id ?? targetDialogTicker ?? "price-target-dialog"}
+        open={targetDialogTicker != null}
+        ticker={targetDialogTicker}
+        currentPrice={activeTargetPosition?.marketPrice ?? null}
+        existingTarget={activeTarget}
+        isSaving={isSavingTarget}
+        error={targetError}
+        onOpenChange={(open) => {
+          if (!open) {
+            setTargetDialogTicker(null);
+            setTargetError("");
+          }
+        }}
+        onSave={handleSaveTarget}
+        onClear={onClearPriceTarget ? handleClearTarget : undefined}
+      />
+    </>
   );
 }

@@ -12,7 +12,11 @@ interface SideToggleProps {
 
 export function SideToggle({ value, onChange }: SideToggleProps) {
   return (
-    <div className="relative flex rounded-lg bg-muted p-1">
+    <div
+      className="relative flex rounded-lg bg-muted p-1"
+      role="radiogroup"
+      aria-label="Trade side"
+    >
       <motion.div
         layout
         layoutId="side-indicator"
@@ -27,6 +31,8 @@ export function SideToggle({ value, onChange }: SideToggleProps) {
       <button
         type="button"
         onClick={() => onChange("BUY")}
+        role="radio"
+        aria-checked={value === "BUY"}
         className={cn(
           "relative z-10 flex-1 rounded-md py-2 text-center text-sm font-semibold transition-colors",
           value === "BUY" ? "text-emerald-400" : "text-muted-foreground hover:text-foreground"
@@ -37,6 +43,8 @@ export function SideToggle({ value, onChange }: SideToggleProps) {
       <button
         type="button"
         onClick={() => onChange("SELL")}
+        role="radio"
+        aria-checked={value === "SELL"}
         className={cn(
           "relative z-10 flex-1 rounded-md py-2 text-center text-sm font-semibold transition-colors",
           value === "SELL" ? "text-red-400" : "text-muted-foreground hover:text-foreground"

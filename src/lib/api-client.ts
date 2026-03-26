@@ -1,13 +1,17 @@
 "use client";
 
-import { supabase } from "@/lib/supabase/client";
 import type {
+  AppNotification,
   CashFlowEntry,
   CashFlowEntryInput,
+  PriceTargetWatch,
   SignalNotification,
+  TradingSignal,
   Transaction,
   TransactionInput,
 } from "@/lib/types";
+import type { MarketPriceSnapshot } from "@/lib/market";
+import type { BenchmarkPoint } from "@/lib/benchmark";
 
 interface ApiErrorOptions {
   message: string;
@@ -24,17 +28,9 @@ export class ApiError extends Error {
   }
 }
 
-async function getAccessToken(): Promise<string | null> {
-  if (!supabase) return null;
-
-  const { data, error } = await supabase.auth.getSession();
-  if (error) return null;
-  return data.session?.access_token ?? null;
-}
-
 async function parseError(response: Response): Promise<string> {
   try {
-    const payload = (await response.json()) as { error?: string };
+    const payload = (await response.json()) as { error?: string; code?: string };
     return payload.error ?? `Request failed with status ${response.status}.`;
   } catch {
     return `Request failed with status ${response.status}.`;
@@ -45,16 +41,7 @@ async function requestJson<T>(
   input: string,
   init: RequestInit = {}
 ): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) {
-    throw new ApiError({
-      status: 401,
-      message: "Sign in is required to sync with Supabase.",
-    });
-  }
-
   const headers = new Headers(init.headers);
-  headers.set("Authorization", `Bearer ${token}`);
   if (init.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
@@ -63,6 +50,7 @@ async function requestJson<T>(
     ...init,
     headers,
     cache: "no-store",
+    credentials: "same-origin",
   });
 
   if (!response.ok) {
@@ -122,9 +110,103 @@ export async function fetchSignalNotifications(
   return payload.notifications;
 }
 
+export async function fetchTradingSignals(limit = 50): Promise<TradingSignal[]> {
+  const payload = await requestJson<{ signals: TradingSignal[] }>(
+    `/api/signals?limit=${limit}`
+  );
+  return payload.signals;
+}
+
+export async function fetchNotifications(limit = 20): Promise<{
+  notifications: AppNotification[];
+  unreadCount: number;
+}> {
+  return requestJson<{ notifications: AppNotification[]; unreadCount: number }>(
+    `/api/notifications?limit=${limit}`
+  );
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  await requestJson<{ ok: boolean }>("/api/notifications", {
+    method: "PATCH",
+    body: JSON.stringify({ id }),
+  });
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  await requestJson<{ ok: boolean }>("/api/notifications", {
+    method: "PATCH",
+    body: JSON.stringify({ markAll: true }),
+  });
+}
+
+export async function fetchPriceTargets(): Promise<PriceTargetWatch[]> {
+  const payload = await requestJson<{ targets: PriceTargetWatch[] }>(
+    "/api/price-targets"
+  );
+  return payload.targets;
+}
+
+export async function upsertPriceTarget(input: {
+  ticker: string;
+  targetPrice: number;
+  currentPrice?: number | null;
+}): Promise<PriceTargetWatch | null> {
+  const payload = await requestJson<{ target: PriceTargetWatch | null }>(
+    "/api/price-targets",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    }
+  );
+  return payload.target;
+}
+
+export async function deletePriceTarget(ticker: string): Promise<void> {
+  await requestJson<{ ok: boolean }>("/api/price-targets", {
+    method: "DELETE",
+    body: JSON.stringify({ ticker }),
+  });
+}
+
+export async function fetchIhsgBenchmark(
+  period1: string,
+  period2?: string
+): Promise<BenchmarkPoint[]> {
+  const params = new URLSearchParams({ period1 });
+  if (period2) {
+    params.set("period2", period2);
+  }
+
+  const payload = await requestJson<{
+    benchmark: { series: BenchmarkPoint[] };
+  }>(`/api/benchmark/ihsg?${params.toString()}`);
+
+  return payload.benchmark.series;
+}
+
+export async function updateTradingSignalStatus(
+  signalId: string,
+  status: "DISMISSED" | "EXECUTED"
+): Promise<void> {
+  await requestJson<{ ok: boolean }>(`/api/signals/${signalId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
 export async function fetchMarketPrices(
   tickers: string[]
 ): Promise<Record<string, number>> {
+  const snapshots = await fetchMarketSnapshots(tickers);
+  return Object.fromEntries(
+    Object.entries(snapshots).map(([ticker, snapshot]) => [ticker, snapshot.price])
+  );
+}
+
+export async function fetchMarketSnapshots(
+  tickers: string[]
+): Promise<Record<string, MarketPriceSnapshot>> {
   if (tickers.length === 0) return {};
   try {
     const params = new URLSearchParams({ tickers: tickers.join(",") });

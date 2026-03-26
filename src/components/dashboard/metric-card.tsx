@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import type { LucideIcon } from "lucide-react";
 
+import { InfoTooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 interface MetricCardProps {
@@ -13,6 +14,7 @@ interface MetricCardProps {
   icon: LucideIcon;
   sparkData?: number[];
   pulse?: boolean;
+  helpText?: string;
 }
 
 const toneConfig = {
@@ -78,6 +80,7 @@ export function MetricCard({
   icon: Icon,
   sparkData,
   pulse,
+  helpText,
 }: MetricCardProps) {
   const cfg = toneConfig[tone];
 
@@ -94,9 +97,19 @@ export function MetricCard({
         )}
       >
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-            {label}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+              {label}
+            </span>
+            {helpText ? (
+              <InfoTooltip
+                content={helpText}
+                label={`Show ${label} explanation`}
+                className="size-4 border-border/40 bg-transparent"
+                contentClassName="w-56"
+              />
+            ) : null}
+          </div>
           <span className={cn("relative rounded-lg p-1.5", cfg.iconBg)}>
             <Icon className="size-3.5" />
             {pulse ? (

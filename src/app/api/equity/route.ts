@@ -1,12 +1,16 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { requireAuthenticatedClient } from "@/lib/supabase/server-auth";
 
 /**
  * GET /api/equity
  * Returns equity snapshots from the Supabase equity_snapshots table.
  * Falls back to an empty array if the table has no data yet.
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const auth = await requireAuthenticatedClient(request);
+  if ("error" in auth) return auth.error;
+
   try {
     const supabase = getSupabaseAdmin();
 

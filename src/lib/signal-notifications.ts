@@ -1,7 +1,10 @@
 import { initialSignalNotifications } from "@/lib/mock-data";
-import type { SignalNotification, SignalType } from "@/lib/types";
-
-const SIGNAL_TYPES: SignalType[] = ["BUY", "SELL", "HOLD", "ALERT"];
+import type { SignalNotification } from "@/lib/types";
+import {
+  mapSignalNotificationRows,
+  normalizeSignalType as normalizeSignalTypeValue,
+} from "@/lib/signals";
+import type { SignalType } from "@/lib/types";
 
 export type SignalRow = {
   id: string;
@@ -19,22 +22,9 @@ export function getDefaultSignalNotifications(): SignalNotification[] {
 }
 
 export function normalizeSignalType(value?: string | null): SignalType {
-  const normalized = value?.toUpperCase();
-  if (normalized && SIGNAL_TYPES.includes(normalized as SignalType)) {
-    return normalized as SignalType;
-  }
-  return "ALERT";
+  return normalizeSignalTypeValue(value);
 }
 
 export function mapSignalRows(rows: SignalRow[]): SignalNotification[] {
-  return rows.map((row) => ({
-    id: row.id,
-    createdAt: row.created_at,
-    ticker: row.ticker,
-    type: normalizeSignalType(row.signal_type),
-    message: row.message,
-    source: row.source ?? undefined,
-    confidence: row.confidence ?? null,
-    isRead: Boolean(row.read_at),
-  }));
+  return mapSignalNotificationRows(rows);
 }

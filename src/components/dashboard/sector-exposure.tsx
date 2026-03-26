@@ -5,6 +5,7 @@ import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCompactCurrency } from "@/lib/format";
+import { getSectorColor } from "@/lib/stock-universe";
 
 interface Position {
   ticker: string;
@@ -16,51 +17,42 @@ interface SectorExposureProps {
   sectorMap: Record<string, string>;
 }
 
-const SECTOR_COLORS: Record<string, string> = {
-  Financials: "#3b82f6",
-  "Consumer Staples": "#22c55e",
-  Energy: "#f59e0b",
-  Industrials: "#8b5cf6",
-  Telecommunications: "#06b6d4",
-  Technology: "#ec4899",
-  Materials: "#f97316",
-  "Consumer Discretionary": "#14b8a6",
-  Healthcare: "#10b981",
-  "Real Estate": "#6366f1",
-  Utilities: "#84cc16",
-  Transportation: "#a855f7",
-  Infrastructure: "#64748b",
-};
-
 interface SectorSlice {
   sector: string;
   value: number;
   percent: number;
+  holdings: number;
   fill: string;
 }
 
 export function SectorExposure({ positions, sectorMap }: SectorExposureProps) {
   const { slices, total } = useMemo(() => {
-    const sectorValues: Record<string, number> = {};
+    const sectorValues: Record<string, { value: number; holdings: number }> = {};
     let totalValue = 0;
 
     for (const pos of positions) {
       const sector = sectorMap[pos.ticker] ?? "Other";
-      sectorValues[sector] = (sectorValues[sector] ?? 0) + pos.marketValue;
+      const current = sectorValues[sector] ?? { value: 0, holdings: 0 };
+      current.value += pos.marketValue;
+      current.holdings += 1;
+      sectorValues[sector] = current;
       totalValue += pos.marketValue;
     }
 
     const data: SectorSlice[] = Object.entries(sectorValues)
-      .map(([sector, value]) => ({
+      .map(([sector, entry]) => ({
         sector,
-        value,
-        percent: totalValue > 0 ? value / totalValue : 0,
-        fill: SECTOR_COLORS[sector] ?? "#64748b",
+        value: entry.value,
+        percent: totalValue > 0 ? entry.value / totalValue : 0,
+        holdings: entry.holdings,
+        fill: getSectorColor(sector),
       }))
       .sort((a, b) => b.value - a.value);
 
     return { slices: data, total: totalValue };
   }, [positions, sectorMap]);
+
+  const topSector = slices[0] ?? null;
 
   return (
     <Card className="h-full glass-card">
@@ -68,10 +60,15 @@ export function SectorExposure({ positions, sectorMap }: SectorExposureProps) {
         <CardTitle className="text-base font-semibold uppercase tracking-wider">
           Sector Exposure
         </CardTitle>
+        <p className="text-sm text-muted-foreground">
+          {topSector
+            ? `Largest concentration: ${topSector.sector} at ${(topSector.percent * 100).toFixed(1)}%`
+            : "Distribution across current IDX80 positions."}
+        </p>
       </CardHeader>
       <CardContent>
         {slices.length > 0 ? (
-          <div className="flex items-center gap-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
             <div className="relative h-[180px] w-[180px] shrink-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -114,17 +111,26 @@ export function SectorExposure({ positions, sectorMap }: SectorExposureProps) {
               </div>
             </div>
 
-            <div className="flex flex-1 flex-col gap-1.5 overflow-auto" style={{ maxHeight: 180 }}>
+            <div className="flex flex-1 flex-col gap-2 overflow-auto" style={{ maxHeight: 220 }}>
               {slices.map((s) => (
-                <div key={s.sector} className="flex items-center gap-2 text-[12px]">
-                  <span
-                    className="inline-block size-2.5 rounded-sm"
-                    style={{ background: s.fill }}
-                  />
-                  <span className="flex-1 truncate">{s.sector}</span>
-                  <span className="text-muted-foreground">
-                    {(s.percent * 100).toFixed(1)}%
-                  </span>
+                <div
+                  key={s.sector}
+                  className="rounded-xl border border-border/60 bg-muted/20 px-3 py-2 text-[12px]"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="inline-block size-2.5 rounded-sm"
+                      style={{ background: s.fill }}
+                    />
+                    <span className="flex-1 truncate font-medium">{s.sector}</span>
+                    <span className="text-muted-foreground">
+                      {(s.percent * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+                    <span>{s.holdings} holding{s.holdings > 1 ? "s" : ""}</span>
+                    <span>{formatCompactCurrency(s.value)}</span>
+                  </div>
                 </div>
               ))}
             </div>

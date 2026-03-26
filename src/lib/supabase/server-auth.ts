@@ -1,14 +1,24 @@
+import { createServerClient } from "@supabase/ssr";
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
+
+import {
+  APP_SESSION_DEADLINE_COOKIE,
+  getUserRole,
+  isSessionExpired,
+  type UserRole,
+} from "@/lib/auth/session";
+import { getSupabaseConfig } from "@/lib/supabase/config";
 
 type AuthSuccess = {
   client: SupabaseClient;
   user: User;
+  role: UserRole;
 };
 
 type AuthResult = AuthSuccess | { error: NextResponse };
 
-function readBearerToken(request: NextRequest): string | null {
+function readBearerToken(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
   if (!authHeader) return null;
 
@@ -17,48 +27,100 @@ function readBearerToken(request: NextRequest): string | null {
   return token;
 }
 
+function buildUnauthorizedResponse(message: string, code = "UNAUTHORIZED", status = 401) {
+  return NextResponse.json({ error: message, code }, { status });
+}
+
+function createRouteHandlerSupabaseClient(request: NextRequest) {
+  const { url, publishableKey } = getSupabaseConfig();
+  return createServerClient(url, publishableKey, {
+    cookies: {
+      getAll() {
+        return request.cookies.getAll();
+      },
+      setAll() {
+        // Session refresh is handled centrally in proxy.ts.
+      },
+    },
+  });
+}
+
 export async function requireAuthenticatedClient(
   request: NextRequest
 ): Promise<AuthResult> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  try {
+    const deadlineValue = request.cookies.get(APP_SESSION_DEADLINE_COOKIE)?.value;
+    if (isSessionExpired(deadlineValue)) {
+      return {
+        error: buildUnauthorizedResponse(
+          "Session expired. Please sign in again.",
+          "SESSION_EXPIRED"
+        ),
+      };
+    }
 
-  if (!supabaseUrl || !supabaseAnonKey) {
+    const token = readBearerToken(request);
+
+    if (token) {
+      const { url, publishableKey } = getSupabaseConfig();
+      const client = createClient(url, publishableKey, {
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      });
+
+      const { data, error } = await client.auth.getUser(token);
+      if (error || !data.user) {
+        return {
+          error: buildUnauthorizedResponse(
+            "Unauthorized. Invalid or expired session.",
+            "INVALID_SESSION"
+          ),
+        };
+      }
+
+      return { client, user: data.user, role: getUserRole(data.user) };
+    }
+
+    const client = createRouteHandlerSupabaseClient(request);
+    const { data, error } = await client.auth.getUser();
+
+    if (error || !data.user) {
+      return {
+        error: buildUnauthorizedResponse(
+          "Unauthorized. Please sign in first.",
+          "UNAUTHORIZED"
+        ),
+      };
+    }
+
+    return { client, user: data.user, role: getUserRole(data.user) };
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Supabase environment variables are not configured.";
     return {
       error: NextResponse.json(
-        { error: "Supabase environment variables are not configured." },
+        { error: message, code: "AUTH_CONFIG_ERROR" },
         { status: 500 }
       ),
     };
   }
+}
 
-  const token = readBearerToken(request);
-  if (!token) {
-    return {
-      error: NextResponse.json(
-        { error: "Unauthorized. Missing bearer token." },
-        { status: 401 }
-      ),
-    };
-  }
-
-  const client = createClient(supabaseUrl, supabaseAnonKey, {
-    global: {
-      headers: {
-        Authorization: `Bearer ${token}`,
+export function requireWritableRole(role: UserRole) {
+  if (role === "viewer") {
+    return NextResponse.json(
+      {
+        error: "Read-only access. This action is only available to admin users.",
+        code: "READ_ONLY",
       },
-    },
-  });
-
-  const { data, error } = await client.auth.getUser(token);
-  if (error || !data.user) {
-    return {
-      error: NextResponse.json(
-        { error: "Unauthorized. Invalid or expired session." },
-        { status: 401 }
-      ),
-    };
+      { status: 403 }
+    );
   }
 
-  return { client, user: data.user };
+  return null;
 }

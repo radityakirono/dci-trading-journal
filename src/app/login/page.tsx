@@ -1,13 +1,15 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { KeyRound, Loader2, Mail } from "lucide-react";
 
+import { sanitizeRedirectPath } from "@/lib/auth/session";
 import { useAuth } from "@/components/auth/auth-provider";
 import { DciLogo } from "@/components/brand/dci-logo";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast-provider";
 import {
   Card,
   CardContent,
@@ -18,35 +20,71 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-export default function LoginPage() {
+function LoginPageContent() {
   const router = useRouter();
-  const { signIn, user } = useAuth();
+  const searchParams = useSearchParams();
+  const { signIn, user, loading } = useAuth();
+  const { showToast } = useToast();
+  const passwordHelpId = useId();
+  const emailHelpId = useId();
+  const errorRef = useRef<HTMLDivElement | null>(null);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const redirectTo = sanitizeRedirectPath(searchParams.get("redirectTo"));
+  const reason = searchParams.get("reason");
 
-  // If already logged in, redirect
-  if (user) {
-    router.replace("/");
-    return null;
-  }
+  useEffect(() => {
+    if (user) {
+      router.replace(redirectTo);
+    }
+  }, [redirectTo, router, user]);
+
+  useEffect(() => {
+    if (reason !== "session_expired") return;
+
+    showToast({
+      tone: "warning",
+      title: "Session expired",
+      description: "Please sign in again to continue.",
+    });
+
+    const nextUrl =
+      redirectTo && redirectTo !== "/"
+        ? `/login?redirectTo=${encodeURIComponent(redirectTo)}`
+        : "/login";
+    router.replace(nextUrl);
+  }, [reason, redirectTo, router, showToast]);
+
+  useEffect(() => {
+    if (!error) return;
+    errorRef.current?.focus();
+  }, [error]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
 
-    const result = await signIn(email, password);
+    const result = await signIn(email, password, rememberMe);
 
     if (result) {
       setError(result);
       setSubmitting(false);
     } else {
-      // Success — redirect to dashboard
-      router.replace("/");
+      router.replace(redirectTo);
     }
+  }
+
+  function handleForgotPassword() {
+    showToast({
+      tone: "warning",
+      title: "Contact an admin",
+      description: "Password reset is still managed manually. Please contact your DCI admin.",
+    });
   }
 
   return (
@@ -68,7 +106,7 @@ export default function LoginPage() {
           <CardHeader className="text-center">
             <CardTitle className="text-xl">Welcome back</CardTitle>
             <CardDescription>
-              Sign in to sync your portfolio with Supabase
+              Sign in to access the DCI Trading Journal securely
             </CardDescription>
           </CardHeader>
 
@@ -76,8 +114,11 @@ export default function LoginPage() {
             <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
               {error ? (
                 <motion.div
+                  ref={errorRef}
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
+                  role="alert"
+                  tabIndex={-1}
                   className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
                 >
                   {error}
@@ -96,10 +137,17 @@ export default function LoginPage() {
                     onChange={(e) => setEmail(e.target.value)}
                     required
                     autoComplete="email"
+                    autoFocus
+                    inputMode="email"
                     className="pl-9"
+                    aria-describedby={emailHelpId}
+                    aria-invalid={Boolean(error)}
                     disabled={submitting}
                   />
                 </div>
+                <p id={emailHelpId} className="text-xs text-muted-foreground">
+                  Use the provisioned account email shared by your DCI administrator.
+                </p>
               </div>
 
               <div className="space-y-2">
@@ -115,16 +163,41 @@ export default function LoginPage() {
                     required
                     autoComplete="current-password"
                     className="pl-9"
+                    aria-describedby={passwordHelpId}
+                    aria-invalid={Boolean(error)}
                     disabled={submitting}
                   />
                 </div>
               </div>
 
+              <div className="flex items-center justify-between gap-3">
+                <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(event) => setRememberMe(event.target.checked)}
+                    className="size-4 rounded border border-border bg-background"
+                    disabled={submitting || loading}
+                  />
+                  Remember Me
+                </label>
+                <button
+                  type="button"
+                  onClick={handleForgotPassword}
+                  className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+                >
+                  Forgot password?
+                </button>
+              </div>
+              <p id={passwordHelpId} className="text-xs text-muted-foreground">
+                Password resets are handled manually by a DCI administrator.
+              </p>
+
               <Button
                 type="submit"
                 size="lg"
                 className="w-full"
-                disabled={submitting}
+                disabled={submitting || loading}
               >
                 {submitting ? (
                   <>
@@ -140,9 +213,17 @@ export default function LoginPage() {
         </Card>
 
         <p className="mt-4 text-center text-small text-muted-foreground">
-          DCI Trading Journal — Powered by Supabase
+          Internal access only. Accounts are provisioned by an admin.
         </p>
       </motion.div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-background" />}>
+      <LoginPageContent />
+    </Suspense>
   );
 }

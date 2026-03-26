@@ -10,6 +10,16 @@ create table if not exists public.transactions (
   date date not null,
   ticker text not null,
   side text not null check (side in ('BUY', 'SELL')),
+  strategy text not null default 'Manual' check (
+    strategy in (
+      'Signal-Based',
+      'Breakout',
+      'Swing Trade',
+      'Value Investing',
+      'Momentum',
+      'Manual'
+    )
+  ),
   quantity integer not null check (quantity > 0),
   price bigint not null check (price > 0),
   fee bigint not null check (fee >= 0),
@@ -21,7 +31,7 @@ create table if not exists public.cash_journal (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   date date not null,
-  type text not null check (type in ('DEPOSIT', 'WITHDRAWAL', 'ADJUSTMENT')),
+  type text not null check (type in ('DEPOSIT', 'WITHDRAWAL', 'DIVIDEND', 'ADJUSTMENT')),
   amount bigint not null,
   note text,
   created_at timestamptz not null default now()
@@ -39,9 +49,73 @@ create table if not exists public.signal_notifications (
   read_at timestamptz
 );
 
+create table if not exists public.market_data_cache (
+  ticker text primary key,
+  price numeric(18, 4) not null check (price >= 0),
+  prev_close numeric(18, 4),
+  change_pct numeric(12, 8),
+  volume bigint,
+  source text not null default 'quant-market-stream',
+  updated_at timestamptz not null default now()
+);
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'market_data_cache'
+      and column_name = 'change_pct'
+      and is_generated = 'ALWAYS'
+  ) then
+    alter table public.market_data_cache drop column change_pct;
+    alter table public.market_data_cache add column change_pct numeric(12, 8);
+  end if;
+end
+$$;
+
+create table if not exists public.signal_actions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  signal_id text not null,
+  status text not null check (status in ('EXECUTED', 'DISMISSED')),
+  action_date timestamptz not null default now(),
+  linked_transaction_id uuid references public.transactions(id) on delete set null,
+  executed_price bigint,
+  executed_quantity integer,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, signal_id)
+);
+
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  type text not null check (
+    type in (
+      'NEW_SIGNAL',
+      'SIGNAL_EXECUTED',
+      'SIGNAL_EXPIRED',
+      'ORDER_PLACED',
+      'PORTFOLIO_ALERT'
+    )
+  ),
+  message text not null,
+  is_read boolean not null default false,
+  read_at timestamptz,
+  related_entity_type text,
+  related_entity_id text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, type, related_entity_type, related_entity_id)
+);
+
 -- Ensure owner columns exist for row-level security.
 alter table if exists public.transactions
   add column if not exists user_id uuid references auth.users(id) on delete cascade,
+  add column if not exists strategy text default 'Manual',
   add column if not exists created_at timestamptz not null default now();
 
 alter table if exists public.cash_journal
@@ -51,14 +125,79 @@ alter table if exists public.cash_journal
 alter table if exists public.signal_notifications
   add column if not exists user_id uuid references auth.users(id) on delete cascade,
   add column if not exists created_at timestamptz not null default now();
+
+alter table if exists public.market_data_cache
+  add column if not exists price numeric(18, 4),
+  add column if not exists prev_close numeric(18, 4),
+  add column if not exists change_pct numeric(12, 8),
+  add column if not exists volume bigint,
+  add column if not exists source text not null default 'quant-market-stream',
+  add column if not exists updated_at timestamptz not null default now();
+
+update public.market_data_cache
+set change_pct = round(((price - prev_close) / prev_close)::numeric, 8)
+where prev_close > 0
+  and (change_pct is null or abs(change_pct) > 1);
+
+alter table if exists public.signal_actions
+  add column if not exists user_id uuid references auth.users(id) on delete cascade,
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz not null default now();
+
+alter table if exists public.notifications
+  add column if not exists user_id uuid references auth.users(id) on delete cascade,
+  add column if not exists is_read boolean not null default false,
+  add column if not exists read_at timestamptz,
+  add column if not exists related_entity_type text,
+  add column if not exists related_entity_id text,
+  add column if not exists metadata jsonb not null default '{}'::jsonb,
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz not null default now();
 
 alter table if exists public.transactions
   alter column user_id set default auth.uid();
 
+update public.transactions
+set strategy = 'Manual'
+where strategy is null;
+
+alter table if exists public.transactions
+  alter column strategy set default 'Manual',
+  alter column strategy set not null;
+
+alter table if exists public.transactions
+  drop constraint if exists transactions_strategy_check;
+
+alter table if exists public.transactions
+  add constraint transactions_strategy_check check (
+    strategy in (
+      'Signal-Based',
+      'Breakout',
+      'Swing Trade',
+      'Value Investing',
+      'Momentum',
+      'Manual'
+    )
+  );
+
 alter table if exists public.cash_journal
   alter column user_id set default auth.uid();
 
+alter table if exists public.cash_journal
+  drop constraint if exists cash_journal_type_check;
+
+alter table if exists public.cash_journal
+  add constraint cash_journal_type_check check (
+    type in ('DEPOSIT', 'WITHDRAWAL', 'DIVIDEND', 'ADJUSTMENT')
+  );
+
 alter table if exists public.signal_notifications
+  alter column user_id set default auth.uid();
+
+alter table if exists public.signal_actions
+  alter column user_id set default auth.uid();
+
+alter table if exists public.notifications
   alter column user_id set default auth.uid();
 
 create index if not exists idx_transactions_user_date
@@ -70,10 +209,25 @@ create index if not exists idx_cash_journal_user_date
 create index if not exists idx_signal_notifications_user_created
   on public.signal_notifications (user_id, created_at desc);
 
+create index if not exists idx_market_data_cache_updated_at
+  on public.market_data_cache (updated_at desc);
+
+create index if not exists idx_signal_actions_user_signal
+  on public.signal_actions (user_id, signal_id);
+
+create index if not exists idx_notifications_user_created
+  on public.notifications (user_id, created_at desc);
+
+create index if not exists idx_notifications_user_unread
+  on public.notifications (user_id, is_read, created_at desc);
+
 -- Strict row-level security for core tables.
 alter table if exists public.transactions enable row level security;
 alter table if exists public.cash_journal enable row level security;
 alter table if exists public.signal_notifications enable row level security;
+alter table if exists public.market_data_cache enable row level security;
+alter table if exists public.signal_actions enable row level security;
+alter table if exists public.notifications enable row level security;
 
 drop policy if exists "transactions_select_own" on public.transactions;
 create policy "transactions_select_own"
@@ -141,6 +295,72 @@ create policy "signal_notifications_delete_own"
   on public.signal_notifications for delete
   using (auth.uid() = user_id);
 
+drop policy if exists "market_data_cache_select_authenticated" on public.market_data_cache;
+create policy "market_data_cache_select_authenticated"
+  on public.market_data_cache for select
+  using (auth.role() in ('authenticated', 'service_role'));
+
+drop policy if exists "market_data_cache_insert_service_role" on public.market_data_cache;
+create policy "market_data_cache_insert_service_role"
+  on public.market_data_cache for insert
+  with check (auth.role() = 'service_role');
+
+drop policy if exists "market_data_cache_update_service_role" on public.market_data_cache;
+create policy "market_data_cache_update_service_role"
+  on public.market_data_cache for update
+  using (auth.role() = 'service_role')
+  with check (auth.role() = 'service_role');
+
+drop policy if exists "market_data_cache_delete_service_role" on public.market_data_cache;
+create policy "market_data_cache_delete_service_role"
+  on public.market_data_cache for delete
+  using (auth.role() = 'service_role');
+
+drop policy if exists "signal_actions_select_own" on public.signal_actions;
+create policy "signal_actions_select_own"
+  on public.signal_actions for select
+  using (auth.uid() = user_id);
+
+drop policy if exists "signal_actions_insert_own" on public.signal_actions;
+create policy "signal_actions_insert_own"
+  on public.signal_actions for insert
+  with check (auth.role() = 'authenticated' and auth.uid() = user_id);
+
+drop policy if exists "signal_actions_update_own" on public.signal_actions;
+create policy "signal_actions_update_own"
+  on public.signal_actions for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop policy if exists "signal_actions_delete_own" on public.signal_actions;
+create policy "signal_actions_delete_own"
+  on public.signal_actions for delete
+  using (auth.uid() = user_id);
+
+drop policy if exists "notifications_select_own" on public.notifications;
+create policy "notifications_select_own"
+  on public.notifications for select
+  using (auth.uid() = user_id);
+
+drop policy if exists "notifications_insert_own_or_service" on public.notifications;
+create policy "notifications_insert_own_or_service"
+  on public.notifications for insert
+  with check (
+    auth.role() = 'service_role'
+    or (auth.role() = 'authenticated' and auth.uid() = user_id)
+  );
+
+drop policy if exists "notifications_update_own" on public.notifications;
+create policy "notifications_update_own"
+  on public.notifications for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop policy if exists "notifications_delete_own" on public.notifications;
+create policy "notifications_delete_own"
+  on public.notifications for delete
+  using (auth.uid() = user_id);
+
 -- Centralized audit trail for sensitive mutations.
 create table if not exists public.audit_logs (
   id uuid primary key default gen_random_uuid(),
@@ -167,7 +387,6 @@ create policy "audit_logs_insert_own"
   on public.audit_logs for insert
   with check (auth.role() = 'authenticated' and auth.uid() = user_id);
 
-drop function if exists public.log_financial_mutation();
 create or replace function public.log_financial_mutation()
 returns trigger
 language plpgsql
@@ -211,3 +430,40 @@ create trigger trg_cash_journal_audit
 after insert or update or delete on public.cash_journal
 for each row
 execute function public.log_financial_mutation();
+
+drop trigger if exists trg_signal_actions_updated_at on public.signal_actions;
+drop function if exists public.set_signal_actions_updated_at();
+create or replace function public.set_signal_actions_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create trigger trg_signal_actions_updated_at
+before update on public.signal_actions
+for each row
+execute function public.set_signal_actions_updated_at();
+
+drop trigger if exists trg_notifications_updated_at on public.notifications;
+drop function if exists public.set_notifications_updated_at();
+create or replace function public.set_notifications_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  if new.is_read and new.read_at is null then
+    new.read_at = now();
+  end if;
+  return new;
+end;
+$$;
+
+create trigger trg_notifications_updated_at
+before update on public.notifications
+for each row
+execute function public.set_notifications_updated_at();

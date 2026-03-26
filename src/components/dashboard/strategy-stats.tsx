@@ -13,90 +13,20 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { formatPercent } from "@/lib/format";
+import { buildStrategyPerformanceRows } from "@/lib/reports/data";
+import { SMALL_SAMPLE_WIN_RATE_NOTE } from "@/lib/win-rate";
 import type { Transaction, EquityPoint } from "@/lib/types";
-
-const SHARES_PER_LOT = 100;
 
 interface StrategyStatsProps {
   transactions: Transaction[];
   equitySeries: EquityPoint[];
 }
 
-interface PeriodStats {
-  label: string;
-  returnPct: number;
-  winRate: number | null;
-  trades: number;
-  sharpe: number | null;
-}
-
 export function StrategyStats({ transactions, equitySeries }: StrategyStatsProps) {
-  const stats = useMemo(() => {
-    const now = new Date();
-
-    function statsForDays(days: number, label: string): PeriodStats {
-      const cutoff = new Date(now);
-      cutoff.setDate(cutoff.getDate() - days);
-      const cutoffStr = cutoff.toISOString().slice(0, 10);
-
-      const periodTrades = transactions.filter((t) => t.date >= cutoffStr);
-      const periodEquity = equitySeries.filter((e) => e.date >= cutoffStr);
-
-      // Return
-      const first = periodEquity[0]?.equity ?? 0;
-      const last = periodEquity[periodEquity.length - 1]?.equity ?? 0;
-      const returnPct = first > 0 ? (last - first) / first : 0;
-
-      // Win rate from sells
-      const sells = periodTrades.filter((t) => t.side === "SELL");
-      let winCount = 0;
-      for (const sell of sells) {
-        // Simple heuristic: if sell price > average buy price for that ticker
-        const buys = transactions.filter(
-          (t) => t.side === "BUY" && t.ticker === sell.ticker && t.date <= sell.date
-        );
-        const avgBuy =
-          buys.length > 0
-            ? buys.reduce((s, b) => s + b.price, 0) / buys.length
-            : sell.price;
-        if (sell.price > avgBuy) winCount++;
-      }
-      const winRate = sells.length > 0 ? winCount / sells.length : null;
-
-      // Sharpe (simplified: annualized return / annualized stddev of daily returns)
-      const dailyReturns = periodEquity
-        .map((p, i) => {
-          if (i === 0) return 0;
-          const prev = periodEquity[i - 1].equity;
-          return prev > 0 ? (p.equity - prev) / prev : 0;
-        })
-        .slice(1);
-
-      let sharpe: number | null = null;
-      if (dailyReturns.length > 5) {
-        const mean = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
-        const variance =
-          dailyReturns.reduce((a, b) => a + (b - mean) ** 2, 0) / dailyReturns.length;
-        const stddev = Math.sqrt(variance);
-        sharpe = stddev > 0 ? (mean / stddev) * Math.sqrt(252) : null;
-      }
-
-      return {
-        label,
-        returnPct,
-        winRate,
-        trades: periodTrades.length,
-        sharpe,
-      };
-    }
-
-    return [
-      statsForDays(1, "Today"),
-      statsForDays(7, "1 Week"),
-      statsForDays(30, "1 Month"),
-      statsForDays(365, "YTD"),
-    ];
-  }, [transactions, equitySeries]);
+  const stats = useMemo(
+    () => buildStrategyPerformanceRows(transactions, equitySeries),
+    [transactions, equitySeries]
+  );
 
   return (
     <Card className="h-full glass-card">
@@ -123,14 +53,24 @@ export function StrategyStats({ transactions, equitySeries }: StrategyStatsProps
                 <TableCell
                   className={cn(
                     "text-right text-sm font-mono",
-                    row.returnPct >= 0 ? "text-emerald-400" : "text-rose-400"
+                    row.returnPct == null
+                      ? "text-muted-foreground"
+                      : row.returnPct >= 0
+                        ? "text-emerald-400"
+                        : "text-rose-400"
                   )}
                 >
-                  {row.returnPct >= 0 ? "+" : ""}
-                  {formatPercent(row.returnPct)}
+                  {row.returnPct == null ? "—" : (
+                    <>
+                      {row.returnPct >= 0 ? "+" : ""}
+                      {formatPercent(row.returnPct)}
+                    </>
+                  )}
                 </TableCell>
                 <TableCell className="text-right text-sm font-mono">
-                  {row.winRate != null ? formatPercent(row.winRate) : "—"}
+                  {row.closedTrades > 0 && row.winRate != null
+                    ? `${formatPercent(row.winRate)}${row.winRateSmallSample ? "*" : ""} (n=${row.closedTrades})`
+                    : "—"}
                 </TableCell>
                 <TableCell className="text-right text-sm font-mono">{row.trades}</TableCell>
                 <TableCell className="text-right text-sm font-mono">
@@ -140,6 +80,9 @@ export function StrategyStats({ transactions, equitySeries }: StrategyStatsProps
             ))}
           </TableBody>
         </Table>
+        {stats.some((row) => row.winRateSmallSample) ? (
+          <p className="mt-3 text-xs text-muted-foreground">{SMALL_SAMPLE_WIN_RATE_NOTE}</p>
+        ) : null}
       </CardContent>
     </Card>
   );

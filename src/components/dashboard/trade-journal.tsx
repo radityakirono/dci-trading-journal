@@ -1,12 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Plus, X } from "lucide-react";
+import { ArrowDown, ArrowUp } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -15,21 +12,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
 import { formatCurrency, formatLongDate } from "@/lib/format";
+import { calculateGrossTradeValue, TRADE_STRATEGIES } from "@/lib/trading";
+import { cn } from "@/lib/utils";
 import type { Transaction } from "@/lib/types";
-
-const SHARES_PER_LOT = 100;
-
-const STRATEGIES = [
-  "Momentum",
-  "Mean Reversion",
-  "Breakout",
-  "Swing",
-  "Signal-Based",
-  "Trend Following",
-] as const;
 
 interface JournalEntry {
   id: string;
@@ -38,11 +24,9 @@ interface JournalEntry {
   side: "BUY" | "SELL";
   price: number;
   quantity: number;
-  pnl: number | null;
   strategy: string;
   rationale: string;
-  lesson?: string;
-  tags: string[];
+  cashImpact: number;
 }
 
 interface TradeJournalProps {
@@ -51,57 +35,67 @@ interface TradeJournalProps {
 
 function buildJournalEntries(transactions: Transaction[]): JournalEntry[] {
   return [...transactions]
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .map((t) => ({
-      id: t.id,
-      date: t.date,
-      ticker: t.ticker,
-      side: t.side,
-      price: t.price,
-      quantity: t.quantity,
-      pnl: null,
-      strategy: "Signal-Based",
-      rationale: t.note ?? "",
-      tags: [],
-    }));
+    .sort((left, right) => right.date.localeCompare(left.date))
+    .map((transaction) => {
+      const gross = calculateGrossTradeValue(transaction.quantity, transaction.price);
+      const cashImpact =
+        transaction.side === "BUY" ? -(gross + transaction.fee) : gross - transaction.fee;
+
+      return {
+        id: transaction.id,
+        date: transaction.date,
+        ticker: transaction.ticker,
+        side: transaction.side,
+        price: transaction.price,
+        quantity: transaction.quantity,
+        strategy: transaction.strategy,
+        rationale: transaction.note ?? "",
+        cashImpact,
+      };
+    });
 }
 
 export function TradeJournal({ transactions }: TradeJournalProps) {
   const [filterSide, setFilterSide] = useState<"ALL" | "BUY" | "SELL">("ALL");
   const [filterStrategy, setFilterStrategy] = useState<string>("ALL");
 
-  const entries = useMemo(
-    () => buildJournalEntries(transactions),
-    [transactions]
+  const entries = useMemo(() => buildJournalEntries(transactions), [transactions]);
+  const availableStrategies = useMemo(
+    () =>
+      TRADE_STRATEGIES.filter((strategy) =>
+        entries.some((entry) => entry.strategy === strategy)
+      ),
+    [entries]
   );
 
   const filtered = useMemo(() => {
-    return entries.filter((e) => {
-      if (filterSide !== "ALL" && e.side !== filterSide) return false;
-      if (filterStrategy !== "ALL" && e.strategy !== filterStrategy) return false;
+    return entries.filter((entry) => {
+      if (filterSide !== "ALL" && entry.side !== filterSide) return false;
+      if (filterStrategy !== "ALL" && entry.strategy !== filterStrategy) return false;
       return true;
     });
   }, [entries, filterSide, filterStrategy]);
 
-  // Group by date
   const grouped = useMemo(() => {
-    const map = new Map<string, JournalEntry[]>();
+    const groups = new Map<string, JournalEntry[]>();
     for (const entry of filtered) {
-      const existing = map.get(entry.date) ?? [];
+      const existing = groups.get(entry.date) ?? [];
       existing.push(entry);
-      map.set(entry.date, existing);
+      groups.set(entry.date, existing);
     }
-    return Array.from(map.entries());
+    return Array.from(groups.entries());
   }, [filtered]);
 
   return (
     <div className="space-y-4">
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <Label className="text-xs text-muted-foreground">Side</Label>
-          <Select value={filterSide} onValueChange={(v) => setFilterSide(v as "ALL" | "BUY" | "SELL")}>
-            <SelectTrigger className="h-8 w-24">
+          <Select
+            value={filterSide}
+            onValueChange={(value) => setFilterSide(value as "ALL" | "BUY" | "SELL")}
+          >
+            <SelectTrigger className="h-8 w-full sm:w-24">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -111,29 +105,33 @@ export function TradeJournal({ transactions }: TradeJournalProps) {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2">
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <Label className="text-xs text-muted-foreground">Strategy</Label>
-          <Select value={filterStrategy} onValueChange={(v) => setFilterStrategy(v ?? "ALL")}>
-            <SelectTrigger className="h-8 w-36">
+          <Select
+            value={filterStrategy}
+            onValueChange={(value) => setFilterStrategy(value ?? "ALL")}
+          >
+            <SelectTrigger className="h-8 w-full sm:w-40">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="ALL">All Strategies</SelectItem>
-              {STRATEGIES.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s}
+              {availableStrategies.map((strategy) => (
+                <SelectItem key={strategy} value={strategy}>
+                  {strategy}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
-        <span className="ml-auto text-[11px] text-muted-foreground">
+
+        <span className="text-[11px] text-muted-foreground sm:ml-auto sm:text-right">
           {filtered.length} entries
         </span>
       </div>
 
-      {/* Timeline */}
-      <div className="space-y-4" style={{ maxHeight: 420, overflowY: "auto" }}>
+      <div className="max-h-[420px] space-y-4 overflow-y-auto pr-1">
         {grouped.length > 0 ? (
           grouped.map(([date, items]) => (
             <div key={date}>
@@ -143,11 +141,11 @@ export function TradeJournal({ transactions }: TradeJournalProps) {
                   {formatLongDate(date)}
                 </span>
               </div>
-              <div className="ml-3 space-y-2 border-l border-border/60 pl-4">
+
+              <div className="ml-1 space-y-2 border-l border-border/60 pl-3 sm:ml-3 sm:pl-4">
                 {items.map((entry) => {
                   const isBuy = entry.side === "BUY";
                   const Icon = isBuy ? ArrowUp : ArrowDown;
-                  const gross = entry.quantity * SHARES_PER_LOT * entry.price;
 
                   return (
                     <div
@@ -157,47 +155,47 @@ export function TradeJournal({ transactions }: TradeJournalProps) {
                         isBuy ? "border-l-emerald-500" : "border-l-red-500"
                       )}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <Icon
-                            className={cn(
-                              "size-3.5",
-                              isBuy ? "text-emerald-400" : "text-red-400"
-                            )}
-                          />
-                          <Badge
-                            variant={isBuy ? "default" : "secondary"}
-                            className="text-[10px]"
-                          >
-                            {entry.side}
-                          </Badge>
-                          <span className="text-sm font-semibold">{entry.ticker}</span>
-                          <span className="text-xs text-muted-foreground">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Icon
+                              className={cn(
+                                "size-3.5",
+                                isBuy ? "text-emerald-400" : "text-red-400"
+                              )}
+                            />
+                            <Badge
+                              variant={isBuy ? "default" : "secondary"}
+                              className="text-[10px]"
+                            >
+                              {entry.side}
+                            </Badge>
+                            <span className="text-sm font-semibold">{entry.ticker}</span>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
                             {entry.quantity} lots @ {formatCurrency(entry.price)}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                          <Badge variant="outline" className="text-[10px]">
+                            {entry.strategy}
+                          </Badge>
+                          <span
+                            className={cn(
+                              "text-xs font-medium sm:text-right",
+                              entry.cashImpact >= 0 ? "text-emerald-400" : "text-red-400"
+                            )}
+                          >
+                            {formatCurrency(entry.cashImpact)}
                           </span>
                         </div>
-                        <Badge variant="outline" className="text-[10px]">
-                          {entry.strategy}
-                        </Badge>
                       </div>
 
                       {entry.rationale ? (
                         <p className="mt-1 text-[12px] italic text-muted-foreground">
                           &quot;{entry.rationale}&quot;
                         </p>
-                      ) : null}
-
-                      {entry.tags.length > 0 ? (
-                        <div className="mt-1.5 flex gap-1">
-                          {entry.tags.map((tag) => (
-                            <span
-                              key={tag}
-                              className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
-                            >
-                              #{tag}
-                            </span>
-                          ))}
-                        </div>
                       ) : null}
                     </div>
                   );

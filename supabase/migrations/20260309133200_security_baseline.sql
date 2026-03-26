@@ -39,6 +39,32 @@ create table if not exists public.signal_notifications (
   read_at timestamptz
 );
 
+create table if not exists public.market_data_cache (
+  ticker text primary key,
+  price numeric(18, 4) not null check (price >= 0),
+  prev_close numeric(18, 4),
+  change_pct numeric(12, 8),
+  volume bigint,
+  source text not null default 'quant-market-stream',
+  updated_at timestamptz not null default now()
+);
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'market_data_cache'
+      and column_name = 'change_pct'
+      and is_generated = 'ALWAYS'
+  ) then
+    alter table public.market_data_cache drop column change_pct;
+    alter table public.market_data_cache add column change_pct numeric(12, 8);
+  end if;
+end
+$$;
+
 -- Ensure owner columns exist for row-level security.
 alter table if exists public.transactions
   add column if not exists user_id uuid references auth.users(id) on delete cascade,
@@ -51,6 +77,19 @@ alter table if exists public.cash_journal
 alter table if exists public.signal_notifications
   add column if not exists user_id uuid references auth.users(id) on delete cascade,
   add column if not exists created_at timestamptz not null default now();
+
+alter table if exists public.market_data_cache
+  add column if not exists price numeric(18, 4),
+  add column if not exists prev_close numeric(18, 4),
+  add column if not exists change_pct numeric(12, 8),
+  add column if not exists volume bigint,
+  add column if not exists source text not null default 'quant-market-stream',
+  add column if not exists updated_at timestamptz not null default now();
+
+update public.market_data_cache
+set change_pct = round(((price - prev_close) / prev_close)::numeric, 8)
+where prev_close > 0
+  and (change_pct is null or abs(change_pct) > 1);
 
 alter table if exists public.transactions
   alter column user_id set default auth.uid();
@@ -70,10 +109,14 @@ create index if not exists idx_cash_journal_user_date
 create index if not exists idx_signal_notifications_user_created
   on public.signal_notifications (user_id, created_at desc);
 
+create index if not exists idx_market_data_cache_updated_at
+  on public.market_data_cache (updated_at desc);
+
 -- Strict row-level security for core tables.
 alter table if exists public.transactions enable row level security;
 alter table if exists public.cash_journal enable row level security;
 alter table if exists public.signal_notifications enable row level security;
+alter table if exists public.market_data_cache enable row level security;
 
 drop policy if exists "transactions_select_own" on public.transactions;
 create policy "transactions_select_own"
@@ -141,6 +184,27 @@ create policy "signal_notifications_delete_own"
   on public.signal_notifications for delete
   using (auth.uid() = user_id);
 
+drop policy if exists "market_data_cache_select_authenticated" on public.market_data_cache;
+create policy "market_data_cache_select_authenticated"
+  on public.market_data_cache for select
+  using (auth.role() in ('authenticated', 'service_role'));
+
+drop policy if exists "market_data_cache_insert_service_role" on public.market_data_cache;
+create policy "market_data_cache_insert_service_role"
+  on public.market_data_cache for insert
+  with check (auth.role() = 'service_role');
+
+drop policy if exists "market_data_cache_update_service_role" on public.market_data_cache;
+create policy "market_data_cache_update_service_role"
+  on public.market_data_cache for update
+  using (auth.role() = 'service_role')
+  with check (auth.role() = 'service_role');
+
+drop policy if exists "market_data_cache_delete_service_role" on public.market_data_cache;
+create policy "market_data_cache_delete_service_role"
+  on public.market_data_cache for delete
+  using (auth.role() = 'service_role');
+
 -- Centralized audit trail for sensitive mutations.
 create table if not exists public.audit_logs (
   id uuid primary key default gen_random_uuid(),
@@ -167,7 +231,6 @@ create policy "audit_logs_insert_own"
   on public.audit_logs for insert
   with check (auth.role() = 'authenticated' and auth.uid() = user_id);
 
-drop function if exists public.log_financial_mutation();
 create or replace function public.log_financial_mutation()
 returns trigger
 language plpgsql

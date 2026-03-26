@@ -1,48 +1,59 @@
-'use client';
+"use client";
 
-import { useEffect, useState, useCallback } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import {
-  ArrowLeft,
-  Radio,
-  RefreshCw,
-  Zap,
-  BarChart3,
   AlertTriangle,
+  BarChart3,
+  BellRing,
+  Check,
+  CheckCheck,
   ChevronDown,
   ChevronUp,
+  Clock3,
   Copy,
-  Check,
-} from 'lucide-react';
-import Link from 'next/link';
-import { motion, AnimatePresence } from 'framer-motion';
+  Inbox,
+  Loader2,
+  Radar,
+  RefreshCw,
+  ShieldAlert,
+  ShoppingCart,
+  Target,
+  Zap,
+} from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 
-import { DciLogo } from '@/components/brand/dci-logo';
-import { AnimatedSection } from '@/components/dashboard/animated-section';
-import { ThemeToggle } from '@/components/theme-toggle';
-import { useRealtimeSignals } from '@/lib/hooks/useRealtimeSignals';
+import { AnimatedSection } from "@/components/dashboard/animated-section";
+import { AppShellHeader } from "@/components/layout/app-shell-header";
+import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast-provider";
+import {
+  ApiError,
+  fetchNotifications,
+  fetchTradingSignals,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from "@/lib/api-client";
+import { useRealtimeSignals } from "@/lib/hooks/useRealtimeSignals";
+import { isSignalExpired } from "@/lib/signals";
+import { cn } from "@/lib/utils";
+import type { AppNotification, SignalType, TradingSignal } from "@/lib/types";
 
-/* --- Types --- */
-
-interface TradeTicket {
-  target_entry?: number;
-  size_lots?: number;
-  risk_amount?: number;
-}
-
-interface QuantSignal {
+interface RealtimeQuantSignal {
   id: string;
+  created_at: string;
   signal_ts: string;
   ticker: string;
   ticker_short: string;
-  signal_type: 'BUY' | 'SELL' | 'HOLD' | 'ALERT';
-  raw_action: string;
+  signal_type: SignalType;
   message: string;
+  source: string;
   regime: string | null;
   conviction: number | null;
-  supporting_metrics: Record<string, unknown>;
-  trade_ticket: TradeTicket | null;
-  delivery_status: string;
-  read_at: string | null;
+  trade_ticket: {
+    target_entry?: number | null;
+    size_lots?: number | null;
+    risk_amount?: number | null;
+  } | null;
 }
 
 interface SignalRun {
@@ -50,591 +61,585 @@ interface SignalRun {
   slot_key: string;
   status: string;
   started_at: string;
-  completed_at: string | null;
   engine_version: string | null;
   error_message: string | null;
   metrics: {
     regime?: string;
     session?: string;
-    buy_signals?: number;
-    sell_signals?: number;
     execution_time_ms?: number;
     signals_generated?: number;
-    [key: string]: unknown;
   } | null;
 }
 
-/* --- Badge Colors --- */
+type SignalFilter = "ALL" | SignalType;
+type NotificationFilter = "ALL" | "UNREAD";
 
-const SIGNAL_COLORS: Record<string, { bg: string; text: string; glow: string; border: string }> = {
-  BUY: {
-    bg: 'bg-emerald-500/15',
-    text: 'text-emerald-400',
-    glow: 'shadow-emerald-500/20',
-    border: 'border-emerald-500/20',
-  },
-  SELL: {
-    bg: 'bg-red-500/15',
-    text: 'text-red-400',
-    glow: 'shadow-red-500/20',
-    border: 'border-red-500/20',
-  },
-  HOLD: {
-    bg: 'bg-amber-500/15',
-    text: 'text-amber-400',
-    glow: 'shadow-amber-500/20',
-    border: 'border-amber-500/20',
-  },
-  ALERT: {
-    bg: 'bg-blue-500/15',
-    text: 'text-blue-400',
-    glow: 'shadow-blue-500/20',
-    border: 'border-blue-500/20',
-  },
+const signalColors: Record<SignalType, { bg: string; text: string; border: string }> = {
+  BUY: { bg: "bg-emerald-500/15", text: "text-emerald-400", border: "border-emerald-500/20" },
+  SELL: { bg: "bg-red-500/15", text: "text-red-400", border: "border-red-500/20" },
+  HOLD: { bg: "bg-amber-500/15", text: "text-amber-400", border: "border-amber-500/20" },
+  ALERT: { bg: "bg-blue-500/15", text: "text-blue-400", border: "border-blue-500/20" },
 };
 
-const RUN_STATUS_COLORS: Record<string, { bg: string; text: string }> = {
-  COMPLETED: { bg: 'bg-emerald-500/15', text: 'text-emerald-400' },
-  RUNNING: { bg: 'bg-blue-500/15', text: 'text-blue-400' },
-  FAILED: { bg: 'bg-red-500/15', text: 'text-red-400' },
-  SKIPPED: { bg: 'bg-zinc-500/15', text: 'text-zinc-400' },
-  PARTIAL: { bg: 'bg-amber-500/15', text: 'text-amber-400' },
-};
+function mapRealtimeSignal(signal: RealtimeQuantSignal): TradingSignal {
+  return {
+    id: signal.id,
+    createdAt: signal.created_at,
+    signalTs: signal.signal_ts,
+    ticker: signal.ticker_short || signal.ticker,
+    type: signal.signal_type,
+    message: signal.message,
+    source: signal.source,
+    confidence: signal.conviction,
+    status: isSignalExpired(signal.signal_ts) ? "EXPIRED" : "ACTIVE",
+    actionDate: null,
+    currentPrice: null,
+    linkedTransactionId: null,
+    regime: signal.regime,
+    tradeTicket: signal.trade_ticket
+      ? {
+          targetEntry: signal.trade_ticket.target_entry ?? null,
+          sizeLots: signal.trade_ticket.size_lots ?? null,
+          riskAmount: signal.trade_ticket.risk_amount ?? null,
+        }
+      : null,
+  };
+}
 
-/* --- Helpers --- */
-
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleString('id-ID', {
-    timeZone: 'Asia/Jakarta',
-    hour: '2-digit',
-    minute: '2-digit',
+function formatTime(value: string) {
+  return new Date(value).toLocaleString("id-ID", {
+    timeZone: "Asia/Jakarta",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
-function formatDateTime(iso: string) {
-  return new Date(iso).toLocaleString('id-ID', {
-    timeZone: 'Asia/Jakarta',
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString("id-ID", {
+    timeZone: "Asia/Jakarta",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
-function formatDuration(ms: number) {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
+function formatRelativeTime(value: string) {
+  const diffMs = Date.now() - new Date(value).getTime();
+  const minutes = Math.max(0, Math.floor(diffMs / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
-/* --- Animated Counter --- */
+function formatDuration(ms?: number) {
+  if (!ms) return "N/A";
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
 
-function AnimatedCounter({ value }: { value: number }) {
+function signalStatusLabel(status: TradingSignal["status"]) {
+  if (status === "EXECUTED") return "Executed";
+  if (status === "DISMISSED") return "Dismissed";
+  if (status === "EXPIRED") return "Expired";
+  return "Active";
+}
+
+function notificationVisual(type: AppNotification["type"]) {
+  switch (type) {
+    case "NEW_SIGNAL":
+      return { icon: Radar, tone: "text-emerald-400", label: "New Signal", target: "trading-signals" };
+    case "SIGNAL_EXECUTED":
+      return { icon: BellRing, tone: "text-sky-400", label: "Executed", target: "trading-signals" };
+    case "SIGNAL_EXPIRED":
+      return { icon: Clock3, tone: "text-amber-400", label: "Expired", target: "trading-signals" };
+    case "PRICE_TARGET":
+      return { icon: Target, tone: "text-violet-400", label: "Price Target", target: null };
+    case "PORTFOLIO_ALERT":
+      return { icon: ShieldAlert, tone: "text-rose-400", label: "Alert", target: "trading-signals" };
+    case "ORDER_PLACED":
+    default:
+      return { icon: ShoppingCart, tone: "text-primary", label: "Order", target: null };
+  }
+}
+
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  sub,
+  suffix,
+}: {
+  icon: typeof Inbox;
+  label: string;
+  value: string | number;
+  sub: string;
+  suffix?: string;
+}) {
   return (
-    <motion.span
-      key={value}
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-      className="inline-block"
+    <motion.div
+      whileHover={{ y: -4, borderColor: "rgba(255,255,255,0.15)" }}
+      transition={{ type: "spring", stiffness: 280, damping: 24 }}
+      className="rounded-xl border border-border/40 bg-card/60 p-4"
     >
-      {value}
-    </motion.span>
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Icon className="h-4 w-4" />
+        {label}
+      </div>
+      <p className="mt-1 text-2xl font-bold tabular-nums">
+        {typeof value === "number" ? value : value}
+        {suffix ? <span className="ml-1 text-lg font-medium">{suffix}</span> : null}
+      </p>
+      <p className="text-xs text-muted-foreground">{sub}</p>
+    </motion.div>
   );
 }
 
-/* --- Expandable Run Row --- */
-
-function RunRow({ run, index }: { run: SignalRun; index: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const statusStyle = RUN_STATUS_COLORS[run.status] ?? {
-    bg: 'bg-zinc-500/15',
-    text: 'text-zinc-400',
-  };
+function RunRow({ run }: { run: SignalRun }) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const tone =
+    run.status === "COMPLETED"
+      ? "bg-emerald-500/15 text-emerald-400"
+      : run.status === "FAILED"
+        ? "bg-red-500/15 text-red-400"
+        : "bg-blue-500/15 text-blue-400";
 
   return (
-    <motion.div
-      initial={{ opacity: 0, x: -20 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: index * 0.05, duration: 0.3 }}
-    >
+    <div className="border-b border-border/20 last:border-b-0">
       <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between gap-4 px-5 py-3 transition-colors hover:bg-card/80 cursor-pointer text-left"
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        aria-controls={panelId}
+        className="flex w-full items-center justify-between gap-4 px-5 py-3 text-left hover:bg-card/80"
       >
-        <div className="flex items-center gap-3 min-w-0">
-          <span
-            className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${statusStyle.bg} ${statusStyle.text}`}
-          >
-            {run.status}
-          </span>
-          <span className="font-mono text-sm tabular-nums">{run.slot_key}</span>
-          {run.error_message != null ? (
-            <span className="truncate text-xs text-muted-foreground max-w-[200px]">
-              {run.error_message}
-            </span>
-          ) : null}
+        <div className="flex min-w-0 items-center gap-3">
+          <span className={cn("rounded-md px-2 py-0.5 text-xs font-medium", tone)}>{run.status}</span>
+          <span className="font-mono text-sm">{run.slot_key}</span>
+          {run.error_message ? <span className="truncate text-xs text-muted-foreground">{run.error_message}</span> : null}
         </div>
-        <div className="flex items-center gap-4 text-xs text-muted-foreground shrink-0">
-          {run.metrics?.execution_time_ms != null ? (
-            <span className="tabular-nums">
-              {formatDuration(run.metrics.execution_time_ms as number)}
-            </span>
-          ) : null}
-          <span className="tabular-nums">{formatDateTime(run.started_at)}</span>
-          {run.engine_version != null ? (
-            <span className="opacity-60">{run.engine_version}</span>
-          ) : null}
-          <motion.div animate={{ rotate: expanded ? 180 : 0 }} transition={{ duration: 0.2 }}>
-            <ChevronDown className="h-3.5 w-3.5" />
-          </motion.div>
+        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+          <span>{formatDuration(run.metrics?.execution_time_ms)}</span>
+          <span>{formatDateTime(run.started_at)}</span>
+          <motion.div animate={{ rotate: open ? 180 : 0 }}><ChevronDown className="h-3.5 w-3.5" /></motion.div>
         </div>
       </button>
       <AnimatePresence>
-        {expanded ? (
+        {open ? (
           <motion.div
+            id={panelId}
             initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
+            animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25 }}
             className="overflow-hidden"
           >
-            <div className="px-5 pb-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="rounded-lg bg-background/50 px-3 py-2 text-xs">
-                <span className="text-muted-foreground">Regime</span>
-                <p className="font-medium mt-0.5">{run.metrics?.regime ?? 'N/A'}</p>
-              </div>
-              <div className="rounded-lg bg-background/50 px-3 py-2 text-xs">
-                <span className="text-muted-foreground">Session</span>
-                <p className="font-medium mt-0.5">{run.metrics?.session ?? 'N/A'}</p>
-              </div>
-              <div className="rounded-lg bg-background/50 px-3 py-2 text-xs">
-                <span className="text-muted-foreground">Signals Generated</span>
-                <p className="font-medium mt-0.5">{run.metrics?.signals_generated ?? 0}</p>
-              </div>
-              <div className="rounded-lg bg-background/50 px-3 py-2 text-xs">
-                <span className="text-muted-foreground">Run ID</span>
-                <p className="font-medium font-mono mt-0.5 truncate">{run.run_id}</p>
-              </div>
+            <div className="grid grid-cols-2 gap-3 px-5 pb-3 sm:grid-cols-4">
+              <div className="rounded-lg bg-background/50 px-3 py-2 text-xs"><span className="text-muted-foreground">Regime</span><p className="mt-0.5 font-medium">{run.metrics?.regime ?? "N/A"}</p></div>
+              <div className="rounded-lg bg-background/50 px-3 py-2 text-xs"><span className="text-muted-foreground">Session</span><p className="mt-0.5 font-medium">{run.metrics?.session ?? "N/A"}</p></div>
+              <div className="rounded-lg bg-background/50 px-3 py-2 text-xs"><span className="text-muted-foreground">Signals</span><p className="mt-0.5 font-medium">{run.metrics?.signals_generated ?? 0}</p></div>
+              <div className="rounded-lg bg-background/50 px-3 py-2 text-xs"><span className="text-muted-foreground">Run ID</span><p className="mt-0.5 truncate font-mono font-medium">{run.run_id}</p></div>
             </div>
           </motion.div>
         ) : null}
       </AnimatePresence>
-    </motion.div>
+    </div>
   );
 }
 
-/* --- Signal Card --- */
-
-function SignalCard({ signal, index }: { signal: QuantSignal; index: number }) {
-  const [expanded, setExpanded] = useState(false);
+function SignalCard({ signal }: { signal: TradingSignal }) {
+  const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const colors = SIGNAL_COLORS[signal.signal_type] ?? {
-    bg: 'bg-zinc-500/15',
-    text: 'text-zinc-400',
-    glow: '',
-    border: 'border-zinc-500/20',
-  };
-
-  const copyTicker = async () => {
-    await navigator.clipboard.writeText(signal.ticker_short);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
+  const detailsId = useId();
+  const colors = signalColors[signal.type];
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 15 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.04, duration: 0.35, ease: 'easeOut' }}
-      whileHover={{ backgroundColor: 'rgba(255,255,255,0.02)' }}
-      className="px-5 py-4 cursor-pointer"
-      onClick={() => setExpanded(!expanded)}
-    >
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <motion.span
-            whileHover={{ scale: 1.1 }}
-            className={`inline-flex items-center rounded-md px-2.5 py-1 text-xs font-bold shadow-sm ${colors.bg} ${colors.text} ${colors.glow}`}
-          >
-            {signal.signal_type}
-          </motion.span>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              copyTicker();
-            }}
-            className="group flex items-center gap-1.5 hover:opacity-80 transition-opacity"
-          >
-            <span className="text-lg font-semibold tracking-tight">
-              {signal.ticker_short}
-            </span>
-            <span className="opacity-0 group-hover:opacity-100 transition-opacity">
-              {copied ? (
-                <Check className="h-3.5 w-3.5 text-emerald-400" />
-              ) : (
-                <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-              )}
-            </span>
-          </button>
-          {signal.regime != null ? (
-            <span className="rounded-full border border-border/30 bg-card/50 px-2 py-0.5 text-[11px] text-muted-foreground">
-              {signal.regime}
-            </span>
-          ) : null}
-        </div>
-        <div className="text-right shrink-0 flex items-center gap-3">
-          <div>
-            {signal.conviction !== null ? (
-              <div className="text-sm font-semibold tabular-nums">
-                {(signal.conviction * 100).toFixed(1)}%
-                <span className="ml-1 text-xs font-normal text-muted-foreground">conv.</span>
-              </div>
-            ) : null}
-            <div className="text-xs text-muted-foreground tabular-nums">
-              {formatTime(signal.signal_ts)}
-            </div>
+    <div className="border-b border-border/20 last:border-b-0">
+      <motion.div
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        aria-controls={detailsId}
+        className="cursor-pointer px-5 py-4 hover:bg-card/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setOpen((current) => !current);
+          }
+        }}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className={cn("rounded-md px-2.5 py-1 text-xs font-bold", colors.bg, colors.text)}>{signal.type}</span>
+            <button
+              type="button"
+              className="group flex items-center gap-1.5"
+              onClick={(event) => {
+                event.stopPropagation();
+                void navigator.clipboard.writeText(signal.ticker);
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1200);
+              }}
+            >
+              <span className="text-lg font-semibold">{signal.ticker}</span>
+              {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100" />}
+            </button>
+            {signal.regime ? <span className="rounded-full border border-border/30 px-2 py-0.5 text-[11px] text-muted-foreground">{signal.regime}</span> : null}
+            <span className="rounded-full border border-border/30 px-2 py-0.5 text-[11px] text-muted-foreground">{signalStatusLabel(signal.status)}</span>
           </div>
-          <motion.div animate={{ rotate: expanded ? 180 : 0 }} transition={{ duration: 0.2 }}>
-            <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
-          </motion.div>
+          <div className="flex items-center gap-3 text-right">
+            <div>
+              {signal.confidence != null ? <div className="text-sm font-semibold">{(signal.confidence * 100).toFixed(1)}%</div> : null}
+              <div className="text-xs text-muted-foreground">{formatTime(signal.signalTs)}</div>
+            </div>
+            <motion.div animate={{ rotate: open ? 180 : 0 }}><ChevronUp className="h-3.5 w-3.5 text-muted-foreground" /></motion.div>
+          </div>
         </div>
-      </div>
-      <p className="mt-2 text-sm text-muted-foreground leading-relaxed">{signal.message}</p>
-
+        <p className="mt-2 text-sm text-muted-foreground">{signal.message}</p>
+      </motion.div>
       <AnimatePresence>
-        {expanded ? (
+        {open ? (
           <motion.div
+            id={detailsId}
             initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
+            animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25 }}
             className="overflow-hidden"
           >
-            {signal.trade_ticket && Object.keys(signal.trade_ticket).length > 0 ? (
-              <div className={`mt-3 flex gap-4 rounded-lg border ${colors.border} bg-background/50 px-3 py-2 text-xs font-mono tabular-nums`}>
-                {signal.trade_ticket.target_entry != null ? (
-                  <span>
-                    <span className="text-muted-foreground">Entry</span>{' '}
-                    <span className="font-medium">
-                      Rp{Number(signal.trade_ticket.target_entry).toLocaleString('id-ID')}
-                    </span>
-                  </span>
-                ) : null}
-                {signal.trade_ticket.size_lots != null ? (
-                  <span>
-                    <span className="text-muted-foreground">Size</span>{' '}
-                    <span className="font-medium">
-                      {String(signal.trade_ticket.size_lots)} lots
-                    </span>
-                  </span>
-                ) : null}
-                {signal.trade_ticket.risk_amount != null ? (
-                  <span>
-                    <span className="text-muted-foreground">Risk</span>{' '}
-                    <span className="font-medium">
-                      Rp{Number(signal.trade_ticket.risk_amount).toLocaleString('id-ID')}
-                    </span>
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-            {Object.keys(signal.supporting_metrics).length > 0 ? (
-              <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {Object.entries(signal.supporting_metrics).map(([key, val]) => (
-                  <div key={key} className="rounded-lg bg-background/40 px-3 py-2 text-xs">
-                    <span className="text-muted-foreground capitalize">
-                      {key.replace(/_/g, ' ')}
-                    </span>
-                    <p className="font-medium font-mono mt-0.5 truncate">
-                      {typeof val === 'number' ? val.toFixed(4) : String(val)}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : null}
+            <div className="grid gap-2 px-5 pb-4 sm:grid-cols-2">
+              <div className="rounded-lg bg-background/40 px-3 py-2 text-xs"><span className="text-muted-foreground">Source</span><p className="mt-0.5 font-medium">{signal.source ?? "Signal Engine"}</p></div>
+              <div className="rounded-lg bg-background/40 px-3 py-2 text-xs"><span className="text-muted-foreground">Created</span><p className="mt-0.5 font-medium">{formatDateTime(signal.createdAt)}</p></div>
+              {signal.tradeTicket?.targetEntry != null ? <div className="rounded-lg bg-background/40 px-3 py-2 text-xs"><span className="text-muted-foreground">Entry</span><p className="mt-0.5 font-medium">Rp{Number(signal.tradeTicket.targetEntry).toLocaleString("id-ID")}</p></div> : null}
+              {signal.tradeTicket?.sizeLots != null ? <div className="rounded-lg bg-background/40 px-3 py-2 text-xs"><span className="text-muted-foreground">Size</span><p className="mt-0.5 font-medium">{signal.tradeTicket.sizeLots} lots</p></div> : null}
+            </div>
           </motion.div>
         ) : null}
       </AnimatePresence>
-    </motion.div>
+    </div>
   );
 }
 
-/* --- Page --- */
+function ActivityItem({
+  notification,
+  onOpen,
+}: {
+  notification: AppNotification;
+  onOpen: (notification: AppNotification) => Promise<void>;
+}) {
+  const visual = notificationVisual(notification.type);
+  const Icon = visual.icon;
+
+  return (
+    <button
+      type="button"
+      onClick={() => void onOpen(notification)}
+      className={cn(
+        "w-full rounded-xl border px-4 py-3 text-left transition-colors hover:bg-muted/30",
+        notification.isRead ? "border-border/50 bg-muted/10" : "border-primary/25 bg-primary/5"
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <div className={cn("mt-0.5 rounded-full bg-muted/40 p-2", visual.tone)}><Icon className="size-4" /></div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">{visual.label}</span>
+                {!notification.isRead ? <span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">Unread</span> : null}
+              </div>
+              <p className={cn("mt-1 text-sm leading-5", notification.isRead ? "text-muted-foreground" : "font-medium text-foreground")}>{notification.message}</p>
+            </div>
+            <span className="shrink-0 text-xs text-muted-foreground">{formatRelativeTime(notification.createdAt)}</span>
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+}
 
 export default function NotificationsPage() {
-  const [signals, setSignals] = useState<QuantSignal[]>([]);
+  const { showToast } = useToast();
+  const [signals, setSignals] = useState<TradingSignal[]>([]);
   const [runs, setRuns] = useState<SignalRun[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = useState<string>('ALL');
-
+  const [markingAll, setMarkingAll] = useState(false);
+  const [signalFilter, setSignalFilter] = useState<SignalFilter>("ALL");
+  const [notificationFilter, setNotificationFilter] = useState<NotificationFilter>("ALL");
   const { newSignals, isConnected } = useRealtimeSignals();
 
-  const fetchSignals = useCallback(async () => {
+  const loadPage = useCallback(async () => {
     try {
       setRefreshing(true);
-      const [signalsRes, runsRes] = await Promise.all([
-        fetch('/api/signals?limit=50'),
-        fetch('/api/signal-runs?limit=10'),
+      const [signalRows, notificationPayload, runsRes] = await Promise.all([
+        fetchTradingSignals(50),
+        fetchNotifications(40),
+        fetch("/api/signal-runs?limit=10", { cache: "no-store" }),
       ]);
-
-      if (!signalsRes.ok || !runsRes.ok) {
-        throw new Error('Failed to fetch signal data');
-      }
-
-      const signalsData = await signalsRes.json();
-      const runsData = await runsRes.json();
-
-      setSignals(signalsData.signals || []);
-      setRuns(runsData.runs || []);
+      if (!runsRes.ok) throw new Error("Failed to fetch pipeline runs.");
+      const runsPayload = (await runsRes.json()) as { runs?: SignalRun[] };
+      setSignals(signalRows);
+      setNotifications(notificationPayload.notifications);
+      setUnreadCount(notificationPayload.unreadCount);
+      setRuns(runsPayload.runs ?? []);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      if (err instanceof ApiError && err.status === 401) {
+        setSignals([]);
+        setNotifications([]);
+        setUnreadCount(0);
+        setRuns([]);
+        setError(null);
+      } else {
+        const message =
+          err instanceof Error ? err.message : "Failed to fetch signal center.";
+        setError(message);
+        showToast({
+          tone: "error",
+          title: "Signal center unavailable",
+          description: message,
+        });
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [showToast]);
 
   useEffect(() => {
-    fetchSignals();
-  }, [fetchSignals]);
+    void loadPage();
+  }, [loadPage]);
 
-  const allSignals = [
-    ...newSignals.filter((ns) => !signals.some((s) => s.id === ns.id)),
-    ...signals,
-  ];
+  const liveSignals = useMemo(
+    () => newSignals.map((signal) => mapRealtimeSignal(signal as RealtimeQuantSignal)),
+    [newSignals]
+  );
 
-  const filteredSignals =
-    filter === 'ALL' ? allSignals : allSignals.filter((s) => s.signal_type === filter);
+  const allSignals = useMemo(() => {
+    const map = new Map<string, TradingSignal>();
+    for (const signal of [...liveSignals, ...signals]) {
+      const prev = map.get(signal.id);
+      if (!prev || new Date(signal.signalTs) > new Date(prev.signalTs)) map.set(signal.id, signal);
+    }
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.signalTs).getTime() - new Date(a.signalTs).getTime()
+    );
+  }, [liveSignals, signals]);
+
+  const visibleSignals = useMemo(
+    () => (signalFilter === "ALL" ? allSignals : allSignals.filter((signal) => signal.type === signalFilter)),
+    [allSignals, signalFilter]
+  );
+
+  const visibleNotifications = useMemo(
+    () => (notificationFilter === "UNREAD" ? notifications.filter((item) => !item.isRead) : notifications),
+    [notifications, notificationFilter]
+  );
 
   const latestRun = runs[0];
-  const totalRuns = runs.length;
-  const completedRuns = runs.filter((r) => r.status === 'COMPLETED').length;
-  const skippedRuns = runs.filter((r) => r.status === 'SKIPPED').length;
+  const activeSignals = allSignals.filter((signal) => signal.status === "ACTIVE").length;
 
-  const FILTER_OPTIONS = ['ALL', 'BUY', 'SELL', 'HOLD', 'ALERT'] as const;
+  async function handleNotificationOpen(notification: AppNotification) {
+    if (!notification.isRead) {
+      try {
+        await markNotificationRead(notification.id);
+        setNotifications((current) =>
+          current.map((item) =>
+            item.id === notification.id ? { ...item, isRead: true, readAt: new Date().toISOString() } : item
+          )
+        );
+        setUnreadCount((current) => Math.max(0, current - 1));
+      } catch (err) {
+        console.error("Failed to mark notification as read:", err);
+        showToast({
+          tone: "error",
+          title: "Notification update failed",
+          description:
+            err instanceof Error ? err.message : "Failed to mark notification as read.",
+        });
+      }
+    }
+    const target = notificationVisual(notification.type).target;
+    if (target) document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  async function handleMarkAllRead() {
+    try {
+      setMarkingAll(true);
+      await markAllNotificationsRead();
+      setNotifications((current) => current.map((item) => ({ ...item, isRead: true, readAt: item.readAt ?? new Date().toISOString() })));
+      setUnreadCount(0);
+      showToast({
+        tone: "success",
+        title: "Inbox updated",
+        description: "All notifications have been marked as read.",
+      });
+    } catch (err) {
+      console.error("Failed to mark all notifications as read:", err);
+      showToast({
+        tone: "error",
+        title: "Notification update failed",
+        description:
+          err instanceof Error ? err.message : "Failed to mark all notifications as read.",
+      });
+    } finally {
+      setMarkingAll(false);
+    }
+  }
 
   return (
     <div className="relative min-h-screen bg-background pb-12">
       <div className="pointer-events-none absolute inset-0 -z-20 bg-[radial-gradient(90%_70%_at_50%_0%,color-mix(in_oklch,var(--color-primary)_12%,transparent),transparent_72%)]" />
+      <main className="mx-auto w-full max-w-[1440px] px-4 pt-6 sm:px-6 lg:px-8">
+        <AppShellHeader unreadCount={unreadCount} />
 
-      <main className="mx-auto w-full max-w-7xl px-4 pt-6 sm:px-6 lg:px-8">
-        {/* Header */}
-        <div className="mb-6 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <motion.div whileHover={{ x: -3 }} transition={{ type: 'spring', stiffness: 400 }}>
-              <Link
-                href="/"
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-card/50 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
-              >
-                <ArrowLeft className="h-3.5 w-3.5" />
-                Dashboard
-              </Link>
-            </motion.div>
-            <DciLogo />
+        <div className="mb-6 flex flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center gap-1.5 rounded-full border border-border/30 bg-card/30 px-2.5 py-1">
+            <motion.div
+              className={cn("h-1.5 w-1.5 rounded-full", isConnected ? "bg-emerald-500 shadow-[0_0_6px] shadow-emerald-500/50" : "bg-zinc-500")}
+              animate={isConnected ? { scale: [1, 1.3, 1] } : {}}
+              transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
+            />
+            <span className="text-[11px] font-medium text-muted-foreground">{isConnected ? "Live" : "Offline"}</span>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 rounded-full border border-border/30 bg-card/30 px-2.5 py-1">
-              <motion.div
-                className={`h-1.5 w-1.5 rounded-full ${
-                  isConnected
-                    ? 'bg-emerald-500 shadow-[0_0_6px] shadow-emerald-500/50'
-                    : 'bg-zinc-500'
-                }`}
-                animate={isConnected ? { scale: [1, 1.3, 1] } : {}}
-                transition={{ repeat: Infinity, duration: 2, ease: 'easeInOut' }}
-              />
-              <span className="text-[11px] font-medium text-muted-foreground">
-                {isConnected ? 'Live' : 'Offline'}
-              </span>
-            </div>
-            <motion.button
-              onClick={fetchSignals}
-              disabled={refreshing}
-              whileTap={{ scale: 0.95 }}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-card/50 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-card hover:text-foreground disabled:opacity-50"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-              Refresh
-            </motion.button>
-            <ThemeToggle />
-          </div>
+          <button
+            type="button"
+            onClick={() => void loadPage()}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-card/50 px-3 py-1.5 text-sm text-muted-foreground hover:bg-card hover:text-foreground disabled:opacity-50"
+          >
+            {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            Refresh
+          </button>
         </div>
 
-        {/* Page Title */}
         <AnimatedSection id="signal-header">
           <div className="mb-6">
-            <h1 className="text-2xl font-bold tracking-tight">Signal Notifications</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Automated trading signals from the QuantLite Alpha engine
-            </p>
+            <h1 className="text-2xl font-bold tracking-tight">Signal Center</h1>
+            <p className="mt-1 text-sm text-muted-foreground">Inbox activity and QuantLite pipeline visibility in one place.</p>
           </div>
         </AnimatedSection>
 
-        {error != null ? (
+        {error ? (
           <AnimatedSection id="error">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="mb-6 rounded-xl border border-red-500/30 bg-red-500/5 p-4"
-            >
+            <div className="mb-6 rounded-xl border border-red-500/30 bg-red-500/5 p-4">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4 text-red-400" />
                 <p className="text-sm text-red-400">{error}</p>
               </div>
-            </motion.div>
+            </div>
           </AnimatedSection>
         ) : null}
 
         {loading ? (
-          <div className="flex items-center justify-center min-h-[50vh]">
+          <div className="flex min-h-[50vh] items-center justify-center">
             <div className="flex flex-col items-center gap-3">
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}
-                className="h-8 w-8 rounded-full border-2 border-primary/30 border-t-primary"
-              />
-              <span className="text-sm text-muted-foreground">Loading signals...</span>
+              <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="h-8 w-8 rounded-full border-2 border-primary/30 border-t-primary" />
+              <span className="text-sm text-muted-foreground">Loading signal center...</span>
             </div>
           </div>
         ) : (
           <>
-            {/* Pipeline Health Summary */}
-            <AnimatedSection id="pipeline-summary">
-              <section className="mb-6 grid gap-4 sm:grid-cols-3">
-                {[
-                  {
-                    icon: BarChart3,
-                    label: 'Pipeline Runs',
-                    value: totalRuns,
-                    sub: `${completedRuns} completed \u00b7 ${skippedRuns} skipped`,
-                  },
-                  {
-                    icon: Zap,
-                    label: 'Latest Run',
-                    value: latestRun
-                      ? `${latestRun.slot_key.split(':')[1]}:00`
-                      : '---',
-                    sub: latestRun
-                      ? `${latestRun.metrics?.regime ?? 'Unknown'} \u00b7 ${latestRun.engine_version}`
-                      : 'No runs yet',
-                    suffix: latestRun ? 'WIB' : '',
-                  },
-                  {
-                    icon: Radio,
-                    label: 'Signals Generated',
-                    value: allSignals.length,
-                    sub: `Across ${totalRuns} pipeline executions`,
-                  },
-                ].map((card, i) => (
-                  <motion.div
-                    key={card.label}
-                    whileHover={{ y: -4, borderColor: 'rgba(255,255,255,0.15)' }}
-                    transition={{ type: 'spring', stiffness: 280, damping: 24 }}
-                    className="rounded-xl border border-border/40 bg-card/60 p-4"
-                  >
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: i * 0.1 }}
-                    >
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <card.icon className="h-4 w-4" />
-                        {card.label}
+            <AnimatedSection id="signal-summary" className="mb-6">
+              <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <StatCard icon={Inbox} label="Unread Inbox" value={unreadCount} sub={`${notifications.length} total notifications`} />
+                <StatCard icon={Radar} label="Active Signals" value={activeSignals} sub={`${allSignals.length} total signal records`} />
+                <StatCard icon={BarChart3} label="Pipeline Runs" value={runs.length} sub={`${runs.filter((run) => run.status === "COMPLETED").length} completed`} />
+                <StatCard icon={Zap} label="Latest Run" value={latestRun ? `${latestRun.slot_key.split(":")[1]}:00` : "---"} suffix={latestRun ? "WIB" : undefined} sub={latestRun ? `${latestRun.metrics?.regime ?? "Unknown"} · ${latestRun.engine_version ?? "n/a"}` : "No runs yet"} />
+              </section>
+            </AnimatedSection>
+
+            <div className="grid gap-6 xl:grid-cols-12">
+              <AnimatedSection id="activity-inbox" className="xl:col-span-4">
+                <section className="rounded-xl border border-border/40 bg-card/60">
+                  <div className="border-b border-border/30 px-5 py-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h2 className="text-base font-semibold">Activity Inbox</h2>
+                        <p className="mt-1 text-sm text-muted-foreground">Generated from quant signals and journal execution events.</p>
                       </div>
-                      <p className="mt-1 text-2xl font-bold tabular-nums">
-                        {typeof card.value === 'number' ? (
-                          <AnimatedCounter value={card.value} />
-                        ) : (
-                          card.value
-                        )}
-                        {card.suffix ? (
-                          <span className="ml-1 text-lg font-medium">{card.suffix}</span>
-                        ) : null}
-                      </p>
-                      <p className="text-xs text-muted-foreground">{card.sub}</p>
-                    </motion.div>
-                  </motion.div>
-                ))}
-              </section>
-            </AnimatedSection>
-
-            {/* Pipeline Run History */}
-            <AnimatedSection id="pipeline-runs">
-              <section className="mb-6 rounded-xl border border-border/40 bg-card/60">
-                <div className="border-b border-border/30 px-5 py-3.5">
-                  <h2 className="text-base font-semibold">Recent Pipeline Runs</h2>
-                </div>
-                <div className="divide-y divide-border/20">
-                  {runs.length === 0 ? (
-                    <p className="px-5 py-8 text-center text-sm text-muted-foreground">
-                      No pipeline runs recorded yet.
+                      <Button type="button" variant="ghost" size="sm" onClick={() => void handleMarkAllRead()} disabled={markingAll || unreadCount === 0}>
+                        {markingAll ? <Loader2 className="size-4 animate-spin" /> : <CheckCheck className="size-4" />}
+                        Mark all
+                      </Button>
+                    </div>
+                    <p className="mt-4 text-xs text-muted-foreground sm:hidden">
+                      Swipe to browse inbox filters.
                     </p>
-                  ) : (
-                    runs.map((run, i) => <RunRow key={run.run_id} run={run} index={i} />)
-                  )}
-                </div>
-              </section>
-            </AnimatedSection>
+                    <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+                      {(["ALL", "UNREAD"] as NotificationFilter[]).map((option) => (
+                        <button
+                          key={option}
+                          type="button"
+                          onClick={() => setNotificationFilter(option)}
+                          aria-pressed={notificationFilter === option}
+                          className={cn("rounded-full px-3 py-1 text-xs font-medium", notificationFilter === option ? "bg-primary/15 text-primary" : "bg-muted/20 text-muted-foreground hover:bg-muted/30 hover:text-foreground")}
+                        >
+                          {option === "ALL" ? "All Activity" : "Unread Only"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="max-h-[58rem] space-y-3 overflow-y-auto p-4">
+                    {visibleNotifications.length > 0 ? visibleNotifications.map((notification) => (
+                      <ActivityItem key={notification.id} notification={notification} onOpen={handleNotificationOpen} />
+                    )) : (
+                      <div className="rounded-xl border border-dashed border-border/60 px-4 py-10 text-center text-sm text-muted-foreground">
+                        {notificationFilter === "UNREAD" ? "No unread notifications right now." : "No notifications recorded yet."}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              </AnimatedSection>
 
-            {/* Trading Signals */}
-            <AnimatedSection id="trading-signals">
-              <section className="rounded-xl border border-border/40 bg-card/60">
-                <div className="border-b border-border/30 px-5 py-3.5 flex items-center justify-between flex-wrap gap-2">
-                  <h2 className="text-base font-semibold">
-                    Trading Signals
-                    {filteredSignals.length > 0 ? (
-                      <span className="ml-2 text-sm font-normal text-muted-foreground">
-                        ({filteredSignals.length})
-                      </span>
-                    ) : null}
-                  </h2>
-                  <div className="flex gap-1">
-                    {FILTER_OPTIONS.map((opt) => (
-                      <motion.button
-                        key={opt}
-                        whileTap={{ scale: 0.92 }}
-                        onClick={() => setFilter(opt)}
-                        className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                          filter === opt
-                            ? 'bg-primary/15 text-primary'
-                            : 'text-muted-foreground hover:bg-card/80 hover:text-foreground'
-                        }`}
-                      >
-                        {opt}
-                      </motion.button>
-                    ))}
-                  </div>
-                </div>
+              <div className="space-y-6 xl:col-span-8">
+                <AnimatedSection id="pipeline-runs">
+                  <section className="rounded-xl border border-border/40 bg-card/60">
+                    <div className="border-b border-border/30 px-5 py-3.5"><h2 className="text-base font-semibold">Recent Pipeline Runs</h2></div>
+                    <div>{runs.length > 0 ? runs.map((run) => <RunRow key={run.run_id} run={run} />) : <p className="px-5 py-8 text-center text-sm text-muted-foreground">No pipeline runs recorded yet.</p>}</div>
+                  </section>
+                </AnimatedSection>
 
-                {filteredSignals.length === 0 ? (
-                  <div className="py-16 text-center">
-                    <motion.div
-                      animate={{ y: [0, -5, 0] }}
-                      transition={{ repeat: Infinity, duration: 3, ease: 'easeInOut' }}
-                    >
-                      <Zap className="mx-auto h-10 w-10 text-muted-foreground/30" />
-                    </motion.div>
-                    <p className="mt-3 text-sm text-muted-foreground">
-                      {filter === 'ALL'
-                        ? 'No trading signals generated yet.'
-                        : `No ${filter} signals found.`}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground/60">
-                      Signals will appear here automatically when the engine generates them.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="divide-y divide-border/20">
-                    {filteredSignals.map((signal, i) => (
-                      <SignalCard key={signal.id} signal={signal} index={i} />
-                    ))}
-                  </div>
-                )}
-              </section>
-            </AnimatedSection>
+                <AnimatedSection id="trading-signals">
+                  <section className="rounded-xl border border-border/40 bg-card/60">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/30 px-5 py-3.5">
+                      <h2 className="text-base font-semibold">Trading Signals {visibleSignals.length > 0 ? <span className="ml-2 text-sm font-normal text-muted-foreground">({visibleSignals.length})</span> : null}</h2>
+                      <div className="w-full sm:hidden">
+                        <p className="mb-2 text-xs text-muted-foreground">
+                          Swipe to browse signal filters.
+                        </p>
+                      </div>
+                      <div className="flex gap-1 overflow-x-auto pb-1">
+                        {(["ALL", "BUY", "SELL", "HOLD", "ALERT"] as SignalFilter[]).map((option) => (
+                          <button
+                            key={option}
+                            type="button"
+                            onClick={() => setSignalFilter(option)}
+                            aria-pressed={signalFilter === option}
+                            className={cn("rounded-md px-2.5 py-1 text-xs font-medium", signalFilter === option ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-card/80 hover:text-foreground")}
+                          >
+                            {option}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      {visibleSignals.length > 0 ? visibleSignals.map((signal) => <SignalCard key={signal.id} signal={signal} />) : (
+                        <div className="py-16 text-center">
+                          <Zap className="mx-auto h-10 w-10 text-muted-foreground/30" />
+                          <p className="mt-3 text-sm text-muted-foreground">{signalFilter === "ALL" ? "No trading signals generated yet." : `No ${signalFilter} signals found.`}</p>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                </AnimatedSection>
+              </div>
+            </div>
           </>
         )}
       </main>
